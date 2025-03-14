@@ -11,7 +11,11 @@ def main():
             copy_mechanism="copy_and_paste",
             target_site_bias=0.3,
             silencing_sensitivity=0.7,
-            fitness_impact=-0.2
+            fitness_impact=-0.2,
+            length=5000,  # Typical LTR retrotransposon length
+            death_rate=0.01,
+            excision_rate=0.001,
+            progeny_rate=2.0
         ),
         TEType.SINE: TEProperties(
             te_type=TEType.SINE,
@@ -19,7 +23,11 @@ def main():
             copy_mechanism="copy_and_paste",
             target_site_bias=0.5,
             silencing_sensitivity=0.8,
-            fitness_impact=-0.1
+            fitness_impact=-0.1,
+            length=300,  # Typical SINE length
+            death_rate=0.02,
+            excision_rate=0.001,
+            progeny_rate=3.0
         ),
         TEType.LINE: TEProperties(
             te_type=TEType.LINE,
@@ -27,7 +35,11 @@ def main():
             copy_mechanism="copy_and_paste",
             target_site_bias=0.4,
             silencing_sensitivity=0.6,
-            fitness_impact=-0.3
+            fitness_impact=-0.3,
+            length=6000,  # Typical LINE length
+            death_rate=0.015,
+            excision_rate=0.001,
+            progeny_rate=1.5
         ),
         TEType.DNA_TRANSPOSON: TEProperties(
             te_type=TEType.DNA_TRANSPOSON,
@@ -35,7 +47,11 @@ def main():
             copy_mechanism="cut_and_paste",
             target_site_bias=0.2,
             silencing_sensitivity=0.5,
-            fitness_impact=-0.15
+            fitness_impact=-0.15,
+            length=2000,  # Typical DNA transposon length
+            death_rate=0.02,
+            excision_rate=0.05,  # Higher excision rate for DNA transposons
+            progeny_rate=1.0  # Usually 1 for cut-and-paste
         )
     }
     
