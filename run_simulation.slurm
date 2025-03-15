@@ -4,7 +4,7 @@
 #SBATCH --cpus-per-task=32     # Request 32 CPU cores
 #SBATCH --gpus-per-node=1      # Request 1 GPU
 #SBATCH --mem=64G              # Request 64GB RAM
-#SBATCH --output=%x-%j.out     # Standard output
+#SBATCH --output=logs/%x-%j.out     # Standard output
 #SBATCH --error=%x-%j.err      # Standard error
 
 # Load required modules
