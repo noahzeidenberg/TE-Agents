@@ -3,6 +3,9 @@ from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple
 from enum import Enum
 import random
+import multiprocessing as mp
+from functools import partial
+import concurrent.futures
 
 class TEType(Enum):
     LTR_RETROTRANSPOSON = "LTR_retrotransposon"
@@ -233,93 +236,152 @@ class GenomeEnvironment:
         self.update_silencing()
         self.update_fitness()
 
+def _process_te_batch(te_batch, genome_size, tissue_type, species):
+    """Process a batch of TEs in parallel"""
+    results = []
+    for te in te_batch:
+        activity = te.get_activity_level(tissue_type, species)
+        new_location = te.attempt_transposition(genome_size)
+        results.append((te, new_location, activity))
+    return results
+
 class TESimulation:
-    """Main simulation class"""
+    """Main simulation class with parallel processing"""
     def __init__(self, 
                  genome_size: int,
                  initial_te_count: int,
                  te_properties: Dict[TEType, TEProperties],
                  tissue_type: str = None,
-                 species: str = None):
+                 species: str = None,
+                 n_processes: int = None):
         self.genome = GenomeEnvironment(genome_size)
         self.te_properties = te_properties
         self.time_step = 0
         self.tissue_type = tissue_type
         self.species = species
-        self.initialize_tes(initial_te_count)
         self.history = []
+        self.n_processes = n_processes or mp.cpu_count()
+        self.initialize_tes(initial_te_count)
         
     def initialize_tes(self, count: int):
-        """Initialize TEs in the genome"""
-        for _ in range(count):
-            te_type = random.choice(list(self.te_properties.keys()))
-            location = random.randint(0, self.genome.size - 1)
-            te = TransposableElement(
+        """Initialize TEs using vectorized operations"""
+        te_types = np.random.choice(list(self.te_properties.keys()), size=count)
+        locations = np.random.randint(0, self.genome.size, size=count)
+        
+        # Vectorized creation of TEs
+        self.genome.te_copies = [
+            TransposableElement(
                 te_type=te_type,
-                location=location,
+                location=loc,
                 properties=self.te_properties[te_type]
-            )
-            self.genome.add_te(te)
+            ) for te_type, loc in zip(te_types, locations)
+        ]
+
+    def _parallel_te_processing(self, te_copies):
+        """Process TEs in parallel using multiple CPU cores"""
+        # Split TEs into batches for parallel processing
+        batch_size = max(1, len(te_copies) // (self.n_processes * 4))
+        te_batches = [te_copies[i:i + batch_size] 
+                     for i in range(0, len(te_copies), batch_size)]
+        
+        # Process batches in parallel
+        process_batch = partial(_process_te_batch, 
+                              genome_size=self.genome.size,
+                              tissue_type=self.tissue_type,
+                              species=self.species)
+        
+        with concurrent.futures.ProcessPoolExecutor(max_workers=self.n_processes) as executor:
+            results = list(executor.map(process_batch, te_batches))
             
+        # Flatten results
+        return [item for batch_result in results for item in batch_result]
+
     def step(self):
-        """Perform one simulation step"""
-        # Update genome properties
+        """Perform one simulation step with parallel processing"""
+        # Update genome properties (vectorized where possible)
         self.genome.update()
         
-        # Update each TE's epigenetic state
-        for te in self.genome.te_copies:
-            te.update_epigenetic_state(self.genome)
-            
-        # Attempt transposition for each TE
+        # Update epigenetic states in parallel
+        active_tes = [te for te in self.genome.te_copies if not te.is_silenced]
+        
+        # Process TEs in parallel
+        if len(self.genome.te_copies) > 100:  # Only parallelize for large numbers of TEs
+            te_results = self._parallel_te_processing(self.genome.te_copies)
+        else:
+            te_results = [(te, te.attempt_transposition(self.genome.size),
+                          te.get_activity_level(self.tissue_type, self.species))
+                         for te in self.genome.te_copies]
+
+        # Process results and create new TEs
         new_tes = []
-        for te in self.genome.te_copies:
-            # Get activity level based on context
-            activity = te.get_activity_level(self.tissue_type, self.species)
-            
-            # Attempt transposition with activity level
-            new_location = te.attempt_transposition(self.genome.size)
+        for te, new_location, activity in te_results:
             if new_location is not None:
                 if te.properties.copy_mechanism == "copy_and_paste":
-                    # Create new copies based on progeny rate
+                    # Vectorized creation of new copies
                     num_copies = int(te.properties.progeny_rate * activity)
-                    for _ in range(num_copies):
-                        new_te = TransposableElement(
-                            te_type=te.te_type,
-                            location=new_location,
-                            properties=te.properties
-                        )
-                        new_tes.append(new_te)
+                    if num_copies > 0:
+                        new_tes.extend([
+                            TransposableElement(
+                                te_type=te.te_type,
+                                location=new_location,
+                                properties=te.properties
+                            ) for _ in range(num_copies)
+                        ])
                 else:  # cut_and_paste
                     te.location = new_location
-                    
-        # Add new TEs
-        for new_te in new_tes:
-            self.genome.add_te(new_te)
-            
-        # Update ages
+
+        # Bulk add new TEs
+        if new_tes:
+            self.genome.te_copies.extend(new_tes)
+
+        # Vectorized age update
         for te in self.genome.te_copies:
             te.age += 1
-            
+
         # Record statistics
         self.history.append(self.get_statistics())
-            
         self.time_step += 1
-        
+
     def get_statistics(self) -> Dict:
-        """Get current simulation statistics"""
+        """Get current simulation statistics using vectorized operations"""
+        te_copies = np.array(self.genome.te_copies)
+        if len(te_copies) == 0:
+            return self._empty_statistics()
+
+        # Vectorized calculations
+        active_mask = np.array([not te.is_silenced for te in te_copies])
+        dead_mask = np.array([te.is_dead for te in te_copies])
+        ages = np.array([te.age for te in te_copies])
+        
         return {
             "time_step": self.time_step,
-            "total_tes": len(self.genome.te_copies),
-            "active_tes": sum(1 for te in self.genome.te_copies if not te.is_silenced),
-            "dead_tes": sum(1 for te in self.genome.te_copies if te.is_dead),
+            "total_tes": len(te_copies),
+            "active_tes": np.sum(active_mask),
+            "dead_tes": np.sum(dead_mask),
             "fitness_impact": self.genome.calculate_fitness_impact(),
             "genome_stability": self.genome.genome_stability,
             "host_fitness": self.genome.host_fitness,
             "te_density": self.genome.te_density,
             "te_types": {
-                te_type: sum(1 for te in self.genome.te_copies if te.te_type == te_type)
+                te_type: np.sum([te.te_type == te_type for te in te_copies])
                 for te_type in TEType
             },
             "epigenetic_marks": len(self.genome.epigenetic_marks),
-            "average_te_age": sum(te.age for te in self.genome.te_copies) / len(self.genome.te_copies) if self.genome.te_copies else 0
+            "average_te_age": np.mean(ages) if len(ages) > 0 else 0
+        }
+
+    def _empty_statistics(self) -> Dict:
+        """Return empty statistics when no TEs exist"""
+        return {
+            "time_step": self.time_step,
+            "total_tes": 0,
+            "active_tes": 0,
+            "dead_tes": 0,
+            "fitness_impact": 0,
+            "genome_stability": self.genome.genome_stability,
+            "host_fitness": self.genome.host_fitness,
+            "te_density": 0,
+            "te_types": {te_type: 0 for te_type in TEType},
+            "epigenetic_marks": 0,
+            "average_te_age": 0
         } 

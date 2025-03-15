@@ -3,12 +3,17 @@ import seaborn as sns
 import numpy as np
 from typing import List, Dict
 from te_simulation import TEType
+import os
 
 class SimulationVisualizer:
     """Handles visualization of TE simulation results"""
     
-    @staticmethod
-    def plot_te_distribution(genome_size: int, te_copies: List['TransposableElement']):
+    def __init__(self):
+        # Create output directory if it doesn't exist
+        self.output_dir = "simulation_plots"
+        os.makedirs(self.output_dir, exist_ok=True)
+    
+    def plot_te_distribution(self, genome_size: int, te_copies: List['TransposableElement']):
         """Plot the distribution of TEs along the genome"""
         plt.figure(figsize=(12, 4))
         
@@ -27,10 +32,10 @@ class SimulationVisualizer:
         plt.ylabel('Number of TEs')
         plt.title('Distribution of TEs Along the Genome')
         plt.legend()
-        plt.show()
+        plt.savefig(os.path.join(self.output_dir, 'te_distribution.png'))
+        plt.close()
         
-    @staticmethod
-    def plot_te_type_distribution(te_copies: List['TransposableElement']):
+    def plot_te_type_distribution(self, te_copies: List['TransposableElement']):
         """Plot the distribution of TE types"""
         plt.figure(figsize=(8, 6))
         
@@ -48,13 +53,11 @@ class SimulationVisualizer:
         plt.title('Distribution of TE Types')
         plt.xticks(rotation=45)
         plt.tight_layout()
-        plt.show()
+        plt.savefig(os.path.join(self.output_dir, 'te_types.png'))
+        plt.close()
         
-    @staticmethod
-    def plot_simulation_history(history: List[Dict]):
+    def plot_simulation_history(self, history: List[Dict]):
         """Plot simulation statistics over time"""
-        plt.figure(figsize=(12, 8))
-        
         # Extract data
         time_steps = [h['time_step'] for h in history]
         total_tes = [h['total_tes'] for h in history]
@@ -79,14 +82,15 @@ class SimulationVisualizer:
         ax2.set_title('Host Fitness Impact Over Time')
         
         plt.tight_layout()
-        plt.show()
+        plt.savefig(os.path.join(self.output_dir, 'simulation_history.png'))
+        plt.close()
         
-    @staticmethod
-    def plot_te_heatmap(genome_size: int, te_copies: List['TransposableElement'], 
+    def plot_te_heatmap(self, genome_size: int, te_copies: List['TransposableElement'], 
                        window_size: int = 1000):
         """Create a heatmap of TE density along the genome"""
         # Create density array
-        density = np.zeros(genome_size // window_size)
+        n_windows = genome_size // window_size
+        density = np.zeros(n_windows)
         
         # Calculate TE density in windows
         for te in te_copies:
@@ -94,11 +98,13 @@ class SimulationVisualizer:
             if window_idx < len(density):
                 density[window_idx] += 1
                 
-        # Reshape for heatmap
-        n_windows = len(density)
-        n_rows = int(np.sqrt(n_windows))
-        n_cols = (n_windows + n_rows - 1) // n_rows
-        heatmap = density[:n_rows * n_cols].reshape(n_rows, n_cols)
+        # Calculate grid dimensions for square-ish layout
+        n_rows = int(np.floor(np.sqrt(n_windows)))
+        n_cols = n_rows  # Make it square
+        
+        # Trim density array to fit square grid
+        density = density[:n_rows * n_cols]
+        heatmap = density.reshape(n_rows, n_cols)
         
         # Plot heatmap
         plt.figure(figsize=(10, 8))
@@ -106,4 +112,5 @@ class SimulationVisualizer:
         plt.xlabel('Genome Position (Windows)')
         plt.ylabel('Genome Position (Windows)')
         plt.title('TE Density Heatmap')
-        plt.show() 
+        plt.savefig(os.path.join(self.output_dir, 'te_heatmap.png'))
+        plt.close() 

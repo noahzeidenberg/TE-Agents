@@ -1,8 +1,13 @@
 from te_simulation import TESimulation, TEType, TEProperties
 from visualization import SimulationVisualizer
 from tqdm import tqdm
+import time
+import multiprocessing as mp
 
 def main():
+    print(f"Available CPU cores: {mp.cpu_count()}")
+    start_time = time.time()
+
     # Define TE properties for different types
     te_properties = {
         TEType.LTR_RETROTRANSPOSON: TEProperties(
@@ -55,19 +60,36 @@ def main():
         )
     }
     
-    # Initialize simulation
+    # Initialize simulation with parallel processing
     genome_size = 1000000  # 1 million base pairs
     initial_te_count = 100
-    simulation = TESimulation(genome_size, initial_te_count, te_properties)
+    n_processes = mp.cpu_count()  # Use all available CPU cores
+    
+    print(f"\nInitializing simulation with {n_processes} processes...")
+    simulation = TESimulation(
+        genome_size=genome_size,
+        initial_te_count=initial_te_count,
+        te_properties=te_properties,
+        n_processes=n_processes
+    )
     
     # Run simulation
     n_steps = 100
     history = []
     
-    print("Running simulation...")
-    for _ in tqdm(range(n_steps)):
-        simulation.step()
-        history.append(simulation.get_statistics())
+    print("\nRunning simulation...")
+    with tqdm(total=n_steps, desc="Simulation progress") as pbar:
+        for step in range(n_steps):
+            step_start = time.time()
+            simulation.step()
+            step_time = time.time() - step_start
+            history.append(simulation.get_statistics())
+            pbar.set_postfix({"Step time": f"{step_time:.2f}s"})
+            pbar.update(1)
+    
+    total_time = time.time() - start_time
+    print(f"\nTotal simulation time: {total_time:.2f} seconds")
+    print(f"Average time per step: {total_time/n_steps:.2f} seconds")
     
     # Visualize results
     print("\nGenerating visualizations...")
