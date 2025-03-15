@@ -14,10 +14,6 @@ from collections import defaultdict
 import re
 import subprocess
 import tempfile
-import warnings
-
-# Filter out Biopython deprecation warnings
-warnings.filterwarnings('ignore', category=BiopythonDeprecationWarning)
 
 class TEFamily(Enum):
     """Yeast TE families"""
@@ -97,50 +93,40 @@ class YeastTEAnalyzer:
         for family in TEFamily:
             consensus_file = self.te_consensus[family]
             
-            # Run BLAST using subprocess directly
+            # Run BLAST
             output_file = f"temp_blast_{family.value}.xml"
-            blast_cmd = [
-                "blastn",
-                "-query", consensus_file,
-                "-db", self.blast_db,
-                "-outfmt", "5",
-                "-out", output_file,
-                "-word_size", "11",
-                "-evalue", "1e-10",
-                "-dust", "no"
-            ]
+            blastn_cline = NcbiblastnCommandline(
+                query=consensus_file,
+                db=self.blast_db,
+                outfmt=5,
+                out=output_file,
+                word_size=11,
+                evalue=1e-10,
+                dust="no"
+            )
+            stdout, stderr = blastn_cline()
             
-            try:
-                subprocess.run(blast_cmd, check=True, capture_output=True)
-            except subprocess.CalledProcessError as e:
-                print(f"BLAST error for {family.value}: {e.stderr.decode()}")
-                continue
+            # Parse BLAST results
+            with open(output_file) as result_handle:
+                blast_records = NCBIXML.parse(result_handle)
+                for record in blast_records:
+                    for alignment in record.alignments:
+                        for hsp in alignment.hsps:
+                            # Filter hits by identity and length
+                            identity = (hsp.identities / hsp.align_length) * 100
+                            if identity >= 80 and hsp.align_length >= 100:
+                                te = TEAnnotation(
+                                    family=family,
+                                    chromosome=alignment.title.split()[0],
+                                    start=hsp.sbjct_start,
+                                    end=hsp.sbjct_end,
+                                    strand='+' if hsp.sbjct_start < hsp.sbjct_end else '-',
+                                    status=TEStatus.UNKNOWN,
+                                    sequence=hsp.sbjct
+                                )
+                                self.te_annotations.append(te)
             
-            # Parse BLAST results using Bio.Blast.NCBIXML
-            try:
-                with open(output_file) as result_handle:
-                    blast_records = NCBIXML.parse(result_handle)
-                    for record in blast_records:
-                        for alignment in record.alignments:
-                            for hsp in alignment.hsps:
-                                # Filter hits by identity and length
-                                identity = (hsp.identities / hsp.align_length) * 100
-                                if identity >= 80 and hsp.align_length >= 100:
-                                    te = TEAnnotation(
-                                        family=family,
-                                        chromosome=alignment.title.split()[0],
-                                        start=hsp.sbjct_start,
-                                        end=hsp.sbjct_end,
-                                        strand='+' if hsp.sbjct_start < hsp.sbjct_end else '-',
-                                        status=TEStatus.UNKNOWN,
-                                        sequence=hsp.sbjct
-                                    )
-                                    self.te_annotations.append(te)
-            except Exception as e:
-                print(f"Error parsing BLAST results for {family.value}: {str(e)}")
-            finally:
-                if os.path.exists(output_file):
-                    os.remove(output_file)
+            os.remove(output_file)
 
     def _analyze_te_status(self, te: TEAnnotation):
         """Determine if a TE is active or inactive and why"""

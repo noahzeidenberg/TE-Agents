@@ -1,7 +1,7 @@
-biopython>=1.81
-pandas>=2.0.0
-requests>=2.31.0
-numpy>=1.24.0
+biopython=1.84 # DRAC doesn't like specifying versions
+pandas=2.2.3
+requests=2.32.3
+numpy=1.24.0
 matplotlib=3.10.0 # ""
 seaborn=0.13.2
 tqdm=4.67.1
