@@ -12,12 +12,12 @@ Each TE is characterized by a set of biological properties:
 
 - **Basic Properties**
   - Type (LTR retrotransposon, SINE, LINE, DNA transposon)
-  - Length (base pairs)
+  - Length
   - Transposition rate
   - Copy mechanism (cut-and-paste or copy-and-paste)
   - Target site bias
   - Silencing sensitivity
-  - Fitness impact
+  - Impact on host
 
 - **Lifecycle Properties**
   - Death rate
@@ -136,8 +136,8 @@ The simulation proceeds in discrete time steps, with the following processes occ
    ```
 
 2. **Genome Stability Calculation**
-   ```python
-   def calculate_genome_stability(self) -> float:
+   ```python 
+   def calculate_genome_stability(self) -> float:  # currently penalizing if TEs are densely packed, but ecosystem engineering implies that could be a helpful mechanism
        stability = 1.0
        
        # Density penalty
