@@ -10,10 +10,19 @@ import torch
 import pickle
 
 class TEType(Enum):
-    LTR_RETROTRANSPOSON = "LTR_retrotransposon"
-    SINE = "SINE"
-    LINE = "LINE"
-    DNA_TRANSPOSON = "DNA_transposon"
+    LTR_RETROTRANSPOSON = 0
+    SINE = 1
+    LINE = 2
+    DNA_TRANSPOSON = 3
+    
+    @property
+    def name_str(self) -> str:
+        return {
+            0: "LTR_retrotransposon",
+            1: "SINE",
+            2: "LINE",
+            3: "DNA_transposon"
+        }[self.value]
 
 @dataclass
 class TEProperties:
@@ -450,20 +459,22 @@ class TESimulation:
             
         # Prepare data for GPU
         locations = torch.tensor([te.location for te in te_copies], device=self.device)
-        types = torch.tensor([te.te_type.value for te in te_copies], device=self.device)
+        types = torch.tensor([te.te_type.value for te in te_copies], dtype=torch.long, device=self.device)
         
         # Generate random numbers in batch
-        rand_vals = torch.rand(len(te_copies), 4, device=self.device)  # For different probability checks
+        rand_vals = torch.rand(len(te_copies), 4, device=self.device)
         
         # Vectorized operations on GPU
         is_active = torch.tensor(
             [not te.is_silenced and not te.is_dead for te in te_copies],
+            dtype=torch.bool,
             device=self.device
         )
         
         # Calculate transposition probabilities
         trans_rates = torch.tensor(
             [te.properties.transposition_rate for te in te_copies],
+            dtype=torch.float32,
             device=self.device
         )
         
@@ -474,13 +485,14 @@ class TESimulation:
         new_locations = torch.empty_like(locations)
         bias_mask = rand_vals[:, 1] < torch.tensor(
             [te.properties.target_site_bias for te in te_copies],
+            dtype=torch.float32,
             device=self.device
         )
         
         # Biased locations
         new_locations[bias_mask] = torch.normal(
-            mean=self.genome.size/2,
-            std=self.genome.size/4,
+            mean=torch.tensor(self.genome.size/2, dtype=torch.float32),
+            std=torch.tensor(self.genome.size/4, dtype=torch.float32),
             size=(bias_mask.sum(),),
             device=self.device
         ).long()

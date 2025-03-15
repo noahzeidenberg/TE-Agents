@@ -8,17 +8,25 @@
 #SBATCH --error=%x-%j.err      # Standard error
 
 # Load required modules
-module load python/3.9
-module load cuda/11.4
+module load python
+module load cuda
 module load scipy-stack
 
-# Create and activate virtual environment
-virtualenv --no-download $SLURM_TMPDIR/env
+# Set up virtual environment with system packages
+virtualenv --system-site-packages $SLURM_TMPDIR/env
 source $SLURM_TMPDIR/env/bin/activate
+
+# Configure pip to use the Compute Canada wheels
+WHEELHOUSE=/cvmfs/soft.computecanada.ca/custom/python/wheelhouse/gentoo/avx2
+WHEELHOUSE_NOAVX=/cvmfs/soft.computecanada.ca/custom/python/wheelhouse/gentoo/generic
+export PIP_CONFIG_FILE=/cvmfs/soft.computecanada.ca/config/python/pip.conf
+export PIP_FIND_LINKS="$WHEELHOUSE $WHEELHOUSE_NOAVX"
+export PIP_NO_INDEX=1
 
 # Install required packages
 pip install --no-index --upgrade pip
 pip install numpy pandas matplotlib seaborn tqdm torch networkx
 
 # Run the simulation
+echo "Starting simulation..."
 python main.py 

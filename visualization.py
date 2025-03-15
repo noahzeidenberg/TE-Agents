@@ -46,7 +46,7 @@ class SimulationVisualizer:
             type_counts[te.te_type] += 1
             
         # Plot TE types
-        ax1.bar([t.value for t in type_counts.keys()], 
+        ax1.bar([t.name_str for t in type_counts.keys()], 
                 list(type_counts.values()))
         ax1.set_xlabel('TE Type')
         ax1.set_ylabel('Number of Copies')
