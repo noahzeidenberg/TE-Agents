@@ -16,6 +16,8 @@ This tool analyzes transposable elements (TEs) in the Saccharomyces cerevisiae g
 
 ## Prerequisites
 
+On DRAC:
+- StdEnv/2020 gcc/9.3.0 
 - Python 3.8 or higher
 - BLAST+ (for sequence alignment)
 - MUSCLE (for detailed mutation analysis)

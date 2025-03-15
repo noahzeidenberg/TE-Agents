@@ -8,6 +8,8 @@ from functools import partial
 import concurrent.futures
 import torch
 import pickle
+import gzip
+from Bio import SeqIO
 
 class TEType(Enum):
     LTR_RETROTRANSPOSON = 0
@@ -631,4 +633,18 @@ class TESimulation:
             "inactivation_mechanisms": {mechanism.value: 0 for mechanism in InactivationMechanism},
             "epigenetic_marks": 0,
             "average_te_age": 0
-        } 
+        }
+
+    def _load_genome(self):
+        """Load the genome sequences"""
+        print("Loading genome sequences...")
+        try:
+            # First try opening as gzip
+            with gzip.open(self.genome_file, 'rt') as f:
+                for record in SeqIO.parse(f, 'fasta'):
+                    self.genome_sequences[record.id] = str(record.seq)
+        except gzip.BadGzipFile:
+            # If not gzipped, open as regular file
+            with open(self.genome_file, 'rt') as f:
+                for record in SeqIO.parse(f, 'fasta'):
+                    self.genome_sequences[record.id] = str(record.seq) 
