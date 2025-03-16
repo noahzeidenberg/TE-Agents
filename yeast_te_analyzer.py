@@ -108,19 +108,16 @@ class YeastTEAnalyzer:
         """Initialize the analyzer with genome and GFF annotation files"""
         self.genome_file = genome_file
         self.gff_file = gff_file
-        self.blast_db = "temp_genome_db"
-        self.genome_sequences = {}
+        self.output_dir = "repeatmasker_output"
         self.te_annotations = []
-        self.te_consensus = {}
-        self.gff_features = []  # Store GFF features
-        self.nearby_features = {}  # Will use TE ID as key instead of TE object
-        self.gene_annotations = {}  # Store gene locations from GFF
+        self.gff_features = []
+        self.nearby_features = {}
+        
+        # Create output directory
+        Path(self.output_dir).mkdir(exist_ok=True)
         
         # Initialize consensus sequences first
         self._load_te_consensus()
-        
-        self._setup_blast_db()
-        self._load_gff_annotations()
         
     def _setup_blast_db(self):
         """Set up BLAST database for the genome"""
@@ -226,359 +223,149 @@ class YeastTEAnalyzer:
             hits.add(hit)
         return hits
 
-    def _identify_te_locations(self):
-        """Identify TE locations using BLAST"""
-        print("Identifying TE locations...")
+    def _run_repeatmasker(self):
+        """Run RepeatMasker on the genome"""
+        print("Running RepeatMasker analysis...")
         
-        # First, get the actual chromosome IDs from the genome
-        valid_chromosomes = set(self.genome_sequences.keys())
-        print(f"Valid chromosome IDs: {', '.join(valid_chromosomes)}")
+        # Create a custom library from our consensus sequences
+        library_file = "consensus/yeast_te_library.fa"
+        with open(library_file, 'w') as lib:
+            for te_file in Path("consensus").glob("S288C_*.fsa"):
+                with open(te_file) as f:
+                    lib.write(f.read() + "\n")
         
-        for family in TEFamily:
-            if family not in self.te_consensus:
-                print(f"Skipping {family.value}: no consensus sequence available")
-                continue
-            
-            consensus_file = self.te_consensus[family]
-            
-            # Create a BLAST database with parameters optimized for TEs
-            output_file = f"temp_blast_{family.value}.txt"
-            blastn_cline = NcbiblastnCommandline(
-                query=consensus_file,
-                db=self.blast_db,
-                outfmt="6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore",
-                out=output_file,
-                word_size=11,
-                evalue=1e-5,        # More permissive e-value for short sequences
-                dust='no',
-                soft_masking='false',
-                task='blastn',
-                gapopen=5,
-                gapextend=2,
-                reward=2,
-                penalty=-3,
-                max_target_seqs=1000
-            )
-            
-            print(f"\nRunning BLAST search for {family.value}...")
-            stdout, stderr = blastn_cline()
-            
-            # Parse tab-delimited BLAST results
-            hit_count = 0
-            if os.path.exists(output_file):
-                with open(output_file) as f:
-                    content = f.read()
-                    if not content.strip():
-                        print(f"No BLAST hits found for {family.value}")
-                        print("Debug: Checking BLAST parameters and consensus sequence...")
-                        continue
-                        
-                    for line in content.strip().split('\n'):
-                        fields = line.split('\t')
-                        if len(fields) >= 12:
-                            pident = float(fields[2])
-                            length = int(fields[3])
-                            
-                            # Adjust filtering based on consensus length
-                            min_length = 50  # Minimum length for delta elements
-                            min_identity = 80  # Minimum identity percentage
-                            
-                            if length >= min_length and pident >= min_identity:
-                                chrom_id = fields[1]
-                                if chrom_id in valid_chromosomes:
-                                    start = min(int(fields[8]), int(fields[9]))
-                                    end = max(int(fields[8]), int(fields[9]))
-                                    
-                                    # Get the actual sequence from the genome
-                                    sequence = self.genome_sequences[chrom_id][start-1:end]
-                                    
-                                    te = TEAnnotation(
-                                        family=family,
-                                        chromosome=chrom_id,
-                                        start=start,
-                                        end=end,
-                                        strand='+' if int(fields[8]) < int(fields[9]) else '-',
-                                        sequence=sequence
-                                    )
-                                    self.te_annotations.append(te)
-                                    hit_count += 1
-            
-            print(f"Found {hit_count} hits for {family.value}")
-            os.remove(output_file)
+        # Run RepeatMasker with custom settings
+        cmd = [
+            "RepeatMasker",
+            "-lib", library_file,          # Use custom library
+            "-species", "Saccharomyces",   # Specify species
+            "-pa", "4",                    # Use 4 parallel processes
+            "-gff",                        # Output GFF format
+            "-nolow",                      # Don't mask low complexity
+            "-no_is",                      # Don't mask bacterial insertion elements
+            "-dir", self.output_dir,       # Output directory
+            self.genome_file               # Input genome
+        ]
+        
+        print("Running command:", " ".join(cmd))
+        subprocess.run(cmd, check=True)
+        
+        # Parse RepeatMasker output
+        self._parse_repeatmasker_output()
 
-    def _merge_overlapping_hits(self):
-        """Merge overlapping TE hits to avoid redundant annotations"""
-        print("Merging overlapping hits...")
-        merged = []
+    def _parse_repeatmasker_output(self):
+        """Parse RepeatMasker output files"""
+        # Parse the .out file which contains detailed annotations
+        out_file = Path(self.output_dir) / f"{Path(self.genome_file).name}.out"
         
-        # Sort by chromosome and start position
-        sorted_tes = sorted(
-            self.te_annotations,
-            key=lambda x: (x.chromosome, x.start)
-        )
+        print(f"Parsing RepeatMasker output: {out_file}")
         
-        if not sorted_tes:
-            return
-        
-        current = sorted_tes[0]
-        
-        for next_te in sorted_tes[1:]:
-            if (current.chromosome == next_te.chromosome and 
-                next_te.start <= current.end + 100):  # Allow small gaps
-                # Merge the TEs
-                current = TEAnnotation(
-                    family=current.family,
-                    chromosome=current.chromosome,
-                    start=min(current.start, next_te.start),
-                    end=max(current.end, next_te.end),
-                    strand=current.strand,
-                    sequence=current.sequence  # Keep the longer sequence
-                    if len(current.sequence) > len(next_te.sequence)
-                    else next_te.sequence
-                )
-            else:
-                merged.append(current)
-                current = next_te
-        
-        merged.append(current)
-        self.te_annotations = merged
-
-    def _analyze_nearby_features(self, te: TEAnnotation) -> List[str]:
-        """Analyze genomic features near the TE"""
-        nearby = []
-        window = 1000  # Look 1kb upstream and downstream
-        
-        for feature in self.gff_features:
-            if feature['chromosome'] != te.chromosome:
-                continue
-                
-            # Check if feature is within window of TE
-            if (abs(feature['start'] - te.start) <= window or 
-                abs(feature['end'] - te.end) <= window):
-                nearby.append(feature)
-        
-        # Store nearby features using TE ID as key
-        self.nearby_features[te.get_id()] = nearby
-        return nearby
-
-    def _check_silencing_marks(self, te: TEAnnotation) -> bool:
-        """Check for silencing marks near the TE"""
-        te_id = te.get_id()
-        if te_id not in self.nearby_features:
-            self._analyze_nearby_features(te)
+        with open(out_file) as f:
+            # Skip header lines
+            for _ in range(3):
+                next(f)
             
-        nearby = self.nearby_features.get(te_id, [])
-        
-        # Check for tRNA genes or other silencing-associated features within 1kb
-        for feature in nearby:
-            feature_type = feature.get('type', '').lower()
-            if any(mark in feature_type for mark in ['trna', 'telomer', 'centromer', 'silenc']):
-                return True
-        
-        return False
+            for line in f:
+                fields = line.strip().split()
+                if len(fields) >= 15:
+                    te = TEAnnotation(
+                        family=self._get_te_family(fields[10]),
+                        chromosome=fields[4],
+                        start=int(fields[5]),
+                        end=int(fields[6]),
+                        strand=fields[8],
+                        sequence="",  # We'll fill this in later
+                        _status=self._determine_status(fields),
+                        _inactivation_reason=self._determine_inactivation(fields)
+                    )
+                    self.te_annotations.append(te)
 
-    def _analyze_te_status(self, te: TEAnnotation):
-        """Analyze the status of a TE"""
-        # First check truncation as it's the most common inactivation mechanism
-        if self._check_truncation(te):
-            te.status = TEStatus.TRUNCATED
-            te.inactivation_reason = InactivationReason.TRUNCATION
-            return
-        
-        # Then check for mutations
-        if self._check_mutations(te):
-            te.status = TEStatus.MUTATED
-            te.inactivation_reason = InactivationReason.MUTATION
-            return
-        
-        # Finally check for silencing marks
-        if self._check_silencing_marks(te):
-            te.status = TEStatus.SILENCED
-            te.inactivation_reason = InactivationReason.SILENCING
-            return
-        
-        # If none of the above, consider it potentially active
-        te.status = TEStatus.ACTIVE
-        te.inactivation_reason = InactivationReason.NONE
+    def _get_te_family(self, name: str) -> TEFamily:
+        """Map RepeatMasker names to TE families"""
+        name = name.upper()
+        if "TY1" in name:
+            return TEFamily.TY1
+        elif "TY2" in name:
+            return TEFamily.TY2
+        elif "TY3" in name:
+            return TEFamily.TY3
+        elif "TY4" in name:
+            return TEFamily.TY4
+        elif "TY5" in name:
+            return TEFamily.TY5
+        else:
+            return None
 
-    def _check_truncation(self, te: TEAnnotation) -> bool:
-        """Check if TE is truncated based on expected lengths"""
-        # Define expected lengths for each TE family (in base pairs)
-        expected_lengths = {
-            TEFamily.TY1: 5900,  # ~5.9 kb
-            TEFamily.TY2: 5900,  # ~5.9 kb
-            TEFamily.TY3: 5400,  # ~5.4 kb
-            TEFamily.TY4: 6200,  # ~6.2 kb
-            TEFamily.TY5: 5400   # ~5.4 kb
-        }
+    def _determine_status(self, fields) -> TEStatus:
+        """Determine TE status from RepeatMasker output"""
+        div_pct = float(fields[1])  # Divergence percentage
+        del_pct = float(fields[2])  # Deletion percentage
+        ins_pct = float(fields[3])  # Insertion percentage
         
-        # Allow for some variation (e.g., 80% of expected length)
-        min_length = expected_lengths[te.family] * 0.8
-        actual_length = te.end - te.start + 1
-        
-        return actual_length < min_length
+        if div_pct < 5 and del_pct < 5 and ins_pct < 5:
+            return TEStatus.ACTIVE
+        elif del_pct > 20:
+            return TEStatus.TRUNCATED
+        elif div_pct > 20:
+            return TEStatus.MUTATED
+        else:
+            return TEStatus.UNKNOWN
 
-    def _run_muscle_alignment(self, sequence1_file: str, sequence2_file: str, output_file: str) -> None:
-        """Run MUSCLE alignment using subprocess"""
-        try:
-            result = subprocess.run(
-                [
-                    'muscle',
-                    '-in', sequence1_file,
-                    '-in2', sequence2_file,
-                    '-out', output_file,
-                    '-quiet',
-                    '-maxiters', '1'
-                ],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            if result.stderr:
-                print(f"MUSCLE stderr: {result.stderr}")
-        except subprocess.CalledProcessError as e:
-            print(f"MUSCLE alignment failed: {e}")
-            raise
-
-    def _check_mutations(self, te: TEAnnotation) -> bool:
-        """Check for inactivating mutations in the TE sequence"""
-        consensus_file = self.te_consensus[te.family]
-        temp_sequence_file = f"temp_te_{te.get_id()}.fasta"
-        output_file = f"temp_alignment_{te.get_id()}.fasta"
+    def _determine_inactivation(self, fields) -> InactivationReason:
+        """Determine inactivation reason from RepeatMasker output"""
+        div_pct = float(fields[1])
+        del_pct = float(fields[2])
         
-        try:
-            # Write TE sequence to temporary file
-            with open(temp_sequence_file, 'w') as f:
-                f.write(f">TE_{te.get_id()}\n{te.sequence}\n")
-            
-            # Run MUSCLE alignment
-            self._run_muscle_alignment(consensus_file, temp_sequence_file, output_file)
-            
-            # Analyze alignment for mutations
-            with open(output_file) as f:
-                alignments = list(SeqIO.parse(f, "fasta"))
-                if len(alignments) == 2:
-                    consensus_seq = str(alignments[0].seq)
-                    te_seq = str(alignments[1].seq)
-                    
-                    # Calculate sequence identity
-                    matches = sum(1 for a, b in zip(consensus_seq, te_seq) if a == b and a != '-' and b != '-')
-                    aligned_positions = sum(1 for a, b in zip(consensus_seq, te_seq) if a != '-' and b != '-')
-                    
-                    if aligned_positions == 0:
-                        return True
-                    
-                    identity = (matches / aligned_positions) * 100
-                    
-                    # Check for frameshift mutations (gaps of non-3 length)
-                    gaps = [len(gap) for gap in te_seq.split('-') if gap]
-                    has_frameshift = any(gap % 3 != 0 for gap in gaps)
-                    
-                    # Check for premature stop codons
-                    has_premature_stop = False
-                    for i in range(0, len(te_seq) - 2, 3):
-                        codon = te_seq[i:i+3].upper()
-                        if codon in ['TAA', 'TAG', 'TGA']:
-                            has_premature_stop = True
-                            break
-                    
-                    return identity < 90 or has_frameshift or has_premature_stop
-            
-            return False
-        
-        finally:
-            # Clean up temporary files
-            for file in [temp_sequence_file, output_file]:
-                try:
-                    Path(file).unlink(missing_ok=True)
-                except Exception as e:
-                    print(f"Warning: Could not remove temporary file {file}: {e}")
-
-    def _check_recombination(self, te: TEAnnotation) -> bool:
-        """Check for recombination"""
-        if len(te.sequence) < 300:  # Typical LTR length
-            te.inactivation_reason = InactivationReason.SILENCING
-            return True
-        return False
-
-    def _has_critical_mutations(self, mutations: List[str]) -> bool:
-        """Check if mutations affect critical regions"""
-        critical_regions = {
-            TEFamily.TY1: [
-                (292, 1850),  # GAG region
-                (1850, 5561)  # POL region
-            ],
-            TEFamily.TY2: [
-                (292, 1850),
-                (1850, 5561)
-            ],
-            TEFamily.TY3: [
-                (238, 1628),  # GAG
-                (1628, 4952)  # POL
-            ],
-            TEFamily.TY4: [
-                (271, 1674),
-                (1674, 5376)
-            ],
-            TEFamily.TY5: [
-                (280, 1713),
-                (1713, 5369)
-            ]
-        }
-        
-        for mutation in mutations:
-            match = re.match(r'[ATCG](\d+)[ATCG]', mutation)
-            if match:
-                pos = int(match.group(1))
-                for family, regions in critical_regions.items():
-                    for start, end in regions:
-                        if start <= pos <= end:
-                            return True
-        return False
+        if del_pct > 20:
+            return InactivationReason.TRUNCATION
+        elif div_pct > 20:
+            return InactivationReason.MUTATION
+        else:
+            return InactivationReason.NONE
 
     def analyze(self):
         """Run the complete TE analysis"""
-        # Load required data
-        print("Loading GFF annotations...")
+        # Run RepeatMasker
+        self._run_repeatmasker()
+        
+        # Load GFF annotations for feature analysis
         self._load_gff_annotations()
         
-        print("Loading genome sequences...")
-        self._load_genome()
+        # Analyze nearby features and silencing
+        for te in self.te_annotations:
+            if self._check_silencing_marks(te):
+                te.status = TEStatus.SILENCED
+                te.inactivation_reason = InactivationReason.SILENCING
         
-        # Configure BLAST database with optimized parameters
-        print("Setting up BLAST database...")
-        makeblastdb_cline = NcbimakeblastdbCommandline(
-            dbtype="nucl",
-            input_file=self.genome_file,
-            out=self.blast_db,
-            parse_seqids=True
-        )
-        makeblastdb_cline()
-        
-        # Identify TEs using spaced seeds
-        self._identify_te_locations()
-        
-        # Merge overlapping hits
-        self._merge_overlapping_hits()
-        
-        # Continue with status analysis
-        print("\nAnalyzing TE status...")
+        # Print summary
+        self._print_summary()
+
+    def _print_summary(self):
+        """Print analysis summary"""
         total = len(self.te_annotations)
-        for i, te in enumerate(self.te_annotations, 1):
-            self._analyze_te_status(te)
-            if i % 10 == 0:  # Progress update every 10 TEs
-                print(f"Processed {i}/{total} TEs...")
-        
-        # Print summary statistics
         status_counts = {}
+        family_counts = {}
+        inactivation_counts = {}
+        
         for te in self.te_annotations:
             status_counts[te.status.value] = status_counts.get(te.status.value, 0) + 1
+            family_counts[te.family.value] = family_counts.get(te.family.value, 0) + 1
+            inactivation_counts[te.inactivation_reason.value] = inactivation_counts.get(te.inactivation_reason.value, 0) + 1
         
         print("\nAnalysis Summary:")
         print(f"Total TEs found: {total}")
+        
+        print("\nTE Family Distribution:")
+        for family, count in family_counts.items():
+            print(f"{family}: {count}")
+        
         print("\nTE Status Distribution:")
         for status, count in status_counts.items():
             print(f"{status}: {count}")
+        
+        print("\nInactivation Reason Distribution:")
+        for reason, count in inactivation_counts.items():
+            print(f"{reason}: {count}")
 
     def _cleanup(self):
         """Clean up temporary files"""
