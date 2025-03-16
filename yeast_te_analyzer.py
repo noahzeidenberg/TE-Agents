@@ -18,6 +18,7 @@ from Bio import Entrez
 import shutil
 from Bio.Blast.Applications import NcbimakeblastdbCommandline
 import json
+from Bio.Emboss.Applications import MuscleCommandline
 
 Entrez.email = "nzeidenb@uoguelph.ca"
 
@@ -135,11 +136,10 @@ class YeastTEAnalyzer:
         os.makedirs("temp_consensus", exist_ok=True)
         
         for family, accession in te_accessions.items():
-            # Fetch sequence from NCBI
             consensus_file = f"temp_consensus/{family.value}.fasta"
             
             try:
-                # Use Entrez to fetch the sequence
+                # Fetch sequence from NCBI
                 handle = Entrez.efetch(
                     db="nucleotide",
                     id=accession,
@@ -147,9 +147,19 @@ class YeastTEAnalyzer:
                     retmode="text"
                 )
                 
-                # Save to temporary file
+                # Clean and save the FASTA file
+                sequence_data = handle.read()
+                lines = sequence_data.split('\n')
+                
+                # Clean the header line (first line)
+                if lines[0].startswith('>'):
+                    # Simplify the header to just include the accession and family
+                    header = f">{family.value}_{accession}"
+                    lines[0] = header
+                
+                # Write cleaned FASTA
                 with open(consensus_file, 'w') as f:
-                    f.write(handle.read())
+                    f.write('\n'.join(lines))
                 
                 self.te_consensus[family] = consensus_file
                 print(f"Retrieved consensus for {family.value}: {accession}")
@@ -316,15 +326,52 @@ class YeastTEAnalyzer:
         return False
 
     def _check_mutations(self, te: TEAnnotation) -> bool:
-        """Check for mutations"""
-        sequence = self.genome_sequences[te.chromosome][te.start:te.end]
-        consensus = self.te_consensus[te.family]
-        mutations = self._find_mutations(sequence, consensus)
-        if self._has_critical_mutations(mutations):
-            te.inactivation_reason = InactivationReason.MUTATION
-            te.mutations = mutations
-            return True
-        return False
+        """Check for inactivating mutations in the TE sequence"""
+        consensus_file = self.te_consensus[te.family]
+        
+        # Create a temporary file for the TE sequence
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.fasta', delete=False) as temp_file:
+            temp_file.write(f">TE_{te.get_id()}\n{te.sequence}\n")
+            temp_sequence_file = temp_file.name
+        
+        try:
+            # Run MUSCLE alignment
+            output_file = f"temp_alignment_{te.get_id()}.fasta"
+            muscle_cline = MuscleCommandline(
+                input=consensus_file,
+                addsequences=temp_sequence_file,
+                out=output_file,
+                quiet=True,  # Suppress MUSCLE output
+                maxiters=1   # Fast alignment is sufficient for our needs
+            )
+            stdout, stderr = muscle_cline()
+            
+            # Analyze alignment for mutations
+            aligned_seqs = {}
+            for record in SeqIO.parse(output_file, "fasta"):
+                aligned_seqs[record.id] = str(record.seq)
+            
+            query_seq = aligned_seqs["TE_" + te.get_id()]
+            consensus_seq = aligned_seqs[consensus_file.split('/')[-1].split('.')[0]]
+            
+            mutations = []
+            for i, (q, c) in enumerate(zip(query_seq, consensus_seq)):
+                if q != c and q != '-' and c != '-':
+                    mutations.append(f"{c}{i+1}{q}")
+            
+            has_inactivating_mutations = self._has_critical_mutations(mutations)
+            
+            if has_inactivating_mutations:
+                te.inactivation_reason = InactivationReason.MUTATION
+                te.mutations = mutations
+            
+            return has_inactivating_mutations
+        
+        finally:
+            # Clean up temporary files
+            os.remove(temp_sequence_file)
+            if os.path.exists(output_file):
+                os.remove(output_file)
 
     def _check_recombination(self, te: TEAnnotation) -> bool:
         """Check for recombination"""
@@ -332,39 +379,6 @@ class YeastTEAnalyzer:
             te.inactivation_reason = InactivationReason.SILENCING
             return True
         return False
-
-    def _find_mutations(self, sequence: str, consensus: str) -> List[str]:
-        """Find mutations compared to consensus sequence"""
-        mutations = []
-        
-        # Align sequences
-        with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
-            f.write(f">query\n{sequence}\n>consensus\n{consensus}\n")
-            temp_file = f.name
-            
-        # Run muscle alignment
-        output_file = f"{temp_file}.aln"
-        subprocess.run([
-            "muscle",
-            "-in", temp_file,
-            "-out", output_file
-        ])
-        
-        # Parse alignment and find mutations
-        aligned_seqs = {}
-        for record in SeqIO.parse(output_file, "fasta"):
-            aligned_seqs[record.id] = str(record.seq)
-            
-        query_seq = aligned_seqs["query"]
-        consensus_seq = aligned_seqs["consensus"]
-        
-        for i, (q, c) in enumerate(zip(query_seq, consensus_seq)):
-            if q != c and q != '-' and c != '-':
-                mutations.append(f"{c}{i+1}{q}")
-                
-        os.remove(temp_file)
-        os.remove(output_file)
-        return mutations
 
     def _has_critical_mutations(self, mutations: List[str]) -> bool:
         """Check if mutations affect critical regions"""
