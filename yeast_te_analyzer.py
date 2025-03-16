@@ -70,15 +70,39 @@ class YeastTEAnalyzer:
         ])
 
     def _load_te_consensus(self) -> Dict[TEFamily, str]:
-        """Load consensus sequences for each TE family"""
-        # Consensus sequences from SGD
-        consensus = {
-            TEFamily.TY1: "consensus/Ty1.fasta",
-            TEFamily.TY2: "consensus/Ty2.fasta",
-            TEFamily.TY3: "consensus/Ty3.fasta",
-            TEFamily.TY4: "consensus/Ty4.fasta",
-            TEFamily.TY5: "consensus/Ty5.fasta"
+        """Load consensus sequences for each TE family from NCBI"""
+        print("Fetching TE consensus sequences from NCBI...")
+        
+        # NCBI accession numbers for S. cerevisiae TE consensus sequences
+        consensus_accessions = {
+            TEFamily.TY1: "M18706.1",  # Ty1 consensus
+            TEFamily.TY2: "X03840.1",  # Ty2 consensus
+            TEFamily.TY3: "M34549.1",  # Ty3 consensus
+            TEFamily.TY4: "X67284.1",  # Ty4 consensus
+            TEFamily.TY5: "U19263.1"   # Ty5 consensus
         }
+        
+        consensus = {}
+        for family, accession in consensus_accessions.items():
+            try:
+                # Fetch sequence from NCBI
+                url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nucleotide&id={accession}&rettype=fasta&retmode=text"
+                response = requests.get(url)
+                response.raise_for_status()
+                
+                # Create temporary file for the consensus sequence
+                with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.fasta') as f:
+                    f.write(response.text)
+                    consensus[family] = f.name
+                    print(f"Retrieved consensus for {family.value}: {accession}")
+                    
+            except requests.exceptions.RequestException as e:
+                print(f"Error fetching consensus for {family.value}: {e}")
+                continue
+        
+        if not consensus:
+            raise ValueError("Failed to retrieve any consensus sequences from NCBI")
+        
         return consensus
 
     def _load_genome(self):
@@ -341,6 +365,23 @@ class YeastTEAnalyzer:
                 'Nearby_Features': str(te.nearby_features)
             })
         return pd.DataFrame(data)
+
+    def __del__(self):
+        """Cleanup temporary files"""
+        # Remove BLAST database files
+        for ext in ['.nhr', '.nin', '.nsq']:
+            try:
+                os.remove(self.blast_db + ext)
+            except (OSError, AttributeError):
+                pass
+            
+        # Remove temporary consensus files
+        if hasattr(self, 'te_consensus'):
+            for temp_file in self.te_consensus.values():
+                try:
+                    os.remove(temp_file)
+                except OSError:
+                    pass
 
 def main():
     parser = argparse.ArgumentParser(description='Analyze TEs in S. cerevisiae genome')
