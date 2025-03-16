@@ -110,6 +110,8 @@ class YeastTEAnalyzer:
         print("Loading genome sequences...")
         with open(self.genome_file, 'rt') as f:
             for record in SeqIO.parse(f, 'fasta'):
+                # Print the first few characters of each header to help debug
+                print(f"Found sequence with ID: {record.id}")
                 self.genome_sequences[record.id] = str(record.seq)
 
     def _load_gff_annotations(self):
@@ -144,6 +146,10 @@ class YeastTEAnalyzer:
         """Identify TE locations using BLAST"""
         print("Identifying TE locations...")
         
+        # First, get the actual chromosome IDs from the genome
+        valid_chromosomes = set(self.genome_sequences.keys())
+        print(f"Valid chromosome IDs: {', '.join(valid_chromosomes)}")
+        
         for family in TEFamily:
             consensus_file = self.te_consensus[family]
             
@@ -169,9 +175,24 @@ class YeastTEAnalyzer:
                             # Filter hits by identity and length
                             identity = (hsp.identities / hsp.align_length) * 100
                             if identity >= 80 and hsp.align_length >= 100:
+                                # Extract the actual chromosome ID from the BLAST title
+                                # The title format might be like "gnl|BL_ORD_ID|3 NC_001135.5"
+                                blast_title = alignment.title.split()
+                                
+                                # Try to find a matching chromosome ID
+                                chrom_id = None
+                                for title_part in blast_title:
+                                    if title_part in valid_chromosomes:
+                                        chrom_id = title_part
+                                        break
+                                
+                                if chrom_id is None:
+                                    print(f"Warning: Could not find valid chromosome ID in BLAST title: {alignment.title}")
+                                    continue
+                                
                                 te = TEAnnotation(
                                     family=family,
-                                    chromosome=alignment.title.split()[0],
+                                    chromosome=chrom_id,
                                     start=hsp.sbjct_start,
                                     end=hsp.sbjct_end,
                                     strand='+' if hsp.sbjct_start < hsp.sbjct_end else '-',
