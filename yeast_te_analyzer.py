@@ -271,37 +271,30 @@ class YeastTEAnalyzer:
                 db=self.blast_db,
                 outfmt=5,
                 out=output_file,
-                word_size=11,
-                evalue=1e-5,  # More permissive e-value
+                word_size=7,          # Reduced word size for higher sensitivity
+                evalue=1e-3,         # More permissive e-value
                 dust='no',
                 soft_masking='false',
-                template_type='coding',  # Optimized for coding sequences
-                template_length=16,
+                task='blastn',       # Changed to blastn for better sensitivity
                 gapopen=5,
                 gapextend=2,
-                reward=2,
-                penalty=-3,
-                min_raw_gapped_score=50
+                reward=1,
+                penalty=-1,
+                max_target_seqs=1000  # Increase number of hits
             )
+            
+            print(f"Running BLAST search for {family.value}...")
             stdout, stderr = blastn_cline()
             
-            # Parse BLAST results and filter using seed hits
+            # Parse BLAST results
+            hit_count = 0
             with open(output_file) as result_handle:
                 blast_records = NCBIXML.parse(result_handle)
                 for record in blast_records:
                     for alignment in record.alignments:
                         for hsp in alignment.hsps:
-                            # Check if any seed hits confirm this match
-                            subject_seq = hsp.sbjct
-                            has_seed_match = False
-                            
-                            for seed in seeds:
-                                subject_hits = self._generate_seed_hits(subject_seq, seed)
-                                if subject_hits & consensus_hits:  # If there's any overlap
-                                    has_seed_match = True
-                                    break
-                            
-                            if has_seed_match:
+                            # More permissive filtering
+                            if hsp.align_length >= 50:  # Minimum alignment length of 50bp
                                 # Extract chromosome ID
                                 blast_title = alignment.title.split()
                                 chrom_id = None
@@ -322,9 +315,10 @@ class YeastTEAnalyzer:
                                     sequence=hsp.sbjct
                                 )
                                 self.te_annotations.append(te)
+                                hit_count += 1
             
+            print(f"Found {hit_count} hits for {family.value}")
             os.remove(output_file)
-            print(f"Completed search for {family.value}")
 
     def _merge_overlapping_hits(self):
         """Merge overlapping TE hits to avoid redundant annotations"""
@@ -621,6 +615,13 @@ class YeastTEAnalyzer:
 
     def generate_report(self) -> pd.DataFrame:
         """Generate a report of TE analysis results"""
+        if not self.te_annotations:
+            print("No TEs found in the analysis.")
+            return pd.DataFrame(columns=[
+                'Family', 'Chromosome', 'Start', 'End', 'Strand',
+                'Status', 'Inactivation_Reason', 'Length', 'Nearby_Features'
+            ])
+        
         report_data = []
         for te in self.te_annotations:
             report_data.append({
@@ -656,7 +657,7 @@ class YeastTEAnalyzer:
             json.dump(summary, f, indent=2)
 
 def main():
-    parser = argparse.ArgumentParser(description='Analyze TEs in S. cerevisiae genome')
+    parser = argparse.ArgumentParser(description='Analyze TEs in yeast genome')
     parser.add_argument('--genome', required=True, help='Path to genome FASTA file')
     parser.add_argument('--gff', required=True, help='Path to GFF annotation file')
     parser.add_argument('--output', required=True, help='Output file prefix')
@@ -667,15 +668,17 @@ def main():
     analyzer.analyze()
     
     # Generate and save report
-    analyzer.save_results(args.output)
-    
-    # Print summary statistics
-    print("\nAnalysis Summary:")
-    print(f"Total TEs found: {len(analyzer.te_annotations)}")
-    status_counts = analyzer.generate_report()['Status'].value_counts()
-    print("\nTE Status Distribution:")
-    for status, count in status_counts.items():
-        print(f"{status}: {count}")
+    report = analyzer.generate_report()
+    if not report.empty:
+        report.to_csv(f"{args.output}_report.csv", index=False)
+        status_counts = report['Status'].value_counts()
+        print("\nAnalysis Summary:")
+        print(f"Total TEs found: {len(report)}")
+        print("\nTE Status Distribution:")
+        for status, count in status_counts.items():
+            print(f"{status}: {count}")
+    else:
+        print("\nNo TEs were found in the analysis.")
 
 if __name__ == "__main__":
     main() 
