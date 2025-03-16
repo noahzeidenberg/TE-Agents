@@ -29,13 +29,12 @@ class TEFamily(Enum):
 class TEStatus(Enum):
     """TE activity status"""
     ACTIVE = "active"
-    INACTIVE_TRUNCATED = "inactive_truncated"
-    INACTIVE_MUTATED = "inactive_mutated"
-    INACTIVE_SILENCED = "inactive_silenced"
-    INACTIVE_RECOMBINED = "inactive_recombined"
+    TRUNCATED = "truncated"
+    MUTATED = "mutated"
+    SILENCED = "silenced"
     UNKNOWN = "unknown"
 
-@dataclass
+@dataclass(frozen=True)  # Make the class immutable and hashable
 class TEAnnotation:
     """Stores information about a TE instance"""
     family: TEFamily
@@ -43,11 +42,19 @@ class TEAnnotation:
     start: int
     end: int
     strand: str
-    status: TEStatus
+    status: TEStatus = TEStatus.UNKNOWN
     inactivation_reason: Optional[str] = None
     sequence: Optional[str] = None
     mutations: Optional[List[str]] = None
     nearby_features: Optional[Dict[str, str]] = None
+
+    def __hash__(self):
+        # Implement custom hash function using immutable attributes
+        return hash((self.family, self.chromosome, self.start, self.end, self.strand))
+    
+    def get_id(self) -> str:
+        """Generate a unique identifier for this TE"""
+        return f"{self.chromosome}_{self.start}_{self.end}_{self.family.value}"
 
 class YeastTEAnalyzer:
     def __init__(self, genome_file: str, gff_file: str):
@@ -59,7 +66,7 @@ class YeastTEAnalyzer:
         self.te_annotations = []
         self.te_consensus = {}
         self.gff_features = []  # Store GFF features
-        self.nearby_features = {}  # Initialize nearby_features as empty dict
+        self.nearby_features = {}  # Will use TE ID as key instead of TE object
         self.gene_annotations = {}  # Store gene locations from GFF
         
         # Initialize consensus sequences first
@@ -230,16 +237,17 @@ class YeastTEAnalyzer:
                 abs(feature['end'] - te.end) <= window):
                 nearby.append(feature)
         
-        # Store nearby features for this TE
-        self.nearby_features[te] = nearby
+        # Store nearby features using TE ID as key
+        self.nearby_features[te.get_id()] = nearby
         return nearby
 
     def _check_silencing_marks(self, te: TEAnnotation) -> bool:
         """Check for silencing marks near the TE"""
-        if te not in self.nearby_features:
+        te_id = te.get_id()
+        if te_id not in self.nearby_features:
             self._analyze_nearby_features(te)
             
-        nearby = self.nearby_features.get(te, [])
+        nearby = self.nearby_features.get(te_id, [])
         
         # Check for tRNA genes or other silencing-associated features
         for feature in nearby:
@@ -256,11 +264,11 @@ class YeastTEAnalyzer:
         
         # Then check various status conditions
         if self._check_truncation(te):
-            te.status = TEStatus.INACTIVE_TRUNCATED
+            te.status = TEStatus.TRUNCATED
         elif self._check_mutations(te):
-            te.status = TEStatus.INACTIVE_MUTATED
+            te.status = TEStatus.MUTATED
         elif self._check_silencing_marks(te):
-            te.status = TEStatus.INACTIVE_SILENCED
+            te.status = TEStatus.SILENCED
         else:
             te.status = TEStatus.ACTIVE
 
