@@ -133,50 +133,48 @@ class YeastTEAnalyzer:
         ])
 
     def _load_te_consensus(self):
-        """Load consensus sequences for each TE family from NCBI"""
-        print("Fetching TE consensus sequences from NCBI...")
+        """Load consensus sequences from SGD"""
+        print("Fetching TE consensus sequences from SGD...")
         
-        # Define NCBI accession numbers for each TE family
-        te_accessions = {
-            TEFamily.TY1: "M18706.1",
-            TEFamily.TY2: "X03840.1",
-            TEFamily.TY3: "M34549.1",
-            TEFamily.TY4: "X67284.1",
-            TEFamily.TY5: "U19263.1"
+        # Define SGD systematic names for each TE family
+        te_sgd_ids = {
+            TEFamily.TY1: "S000006787",  # YALWdelta1
+            TEFamily.TY2: "S000006983",  # YGRWTy2-2
+            TEFamily.TY3: "S000006984",  # YGRWTy3-1
+            TEFamily.TY4: "S000006991",  # YHLWTy4-1
+            TEFamily.TY5: "S000006831"   # YCLWTy5-1
         }
         
         # Create a temporary directory for consensus files
         os.makedirs("temp_consensus", exist_ok=True)
         
-        for family, accession in te_accessions.items():
+        for family, sgd_id in te_sgd_ids.items():
             consensus_file = f"temp_consensus/{family.value}.fasta"
             
             try:
-                # Fetch sequence from NCBI
-                handle = Entrez.efetch(
-                    db="nucleotide",
-                    id=accession,
-                    rettype="fasta",
-                    retmode="text"
-                )
+                # Fetch sequence from SGD
+                url = f"https://www.yeastgenome.org/sequence/{sgd_id}"
+                response = requests.get(url)
+                response.raise_for_status()
                 
-                # Clean and save the FASTA file
-                sequence_data = handle.read()
-                lines = sequence_data.split('\n')
+                sequence_data = response.text
                 
-                # Clean the header line (first line)
-                if lines[0].startswith('>'):
-                    # Simplify the header to just include the accession and family
-                    header = f">{family.value}_{accession}"
-                    lines[0] = header
-                
-                # Write cleaned FASTA
-                with open(consensus_file, 'w') as f:
-                    f.write('\n'.join(lines))
-                
-                self.te_consensus[family] = consensus_file
-                print(f"Retrieved consensus for {family.value}: {accession}")
-                
+                # Extract the FASTA sequence
+                if '>' in sequence_data:
+                    # Write cleaned FASTA
+                    with open(consensus_file, 'w') as f:
+                        f.write(f">{family.value}_consensus\n")
+                        f.write(sequence_data.split('\n', 1)[1])
+                    
+                    self.te_consensus[family] = consensus_file
+                    print(f"Retrieved consensus for {family.value} from SGD")
+                    
+                    # Debug: Print sequence info
+                    with open(consensus_file) as f:
+                        seq = ''.join(line.strip() for line in f if not line.startswith('>'))
+                        print(f"Sequence length: {len(seq)}")
+                        print(f"First 50 bp: {seq[:50]}")
+            
             except Exception as e:
                 print(f"Error fetching consensus for {family.value}: {e}")
                 continue
@@ -239,11 +237,8 @@ class YeastTEAnalyzer:
         return hits
 
     def _identify_te_locations(self):
-        """Identify TE locations using spaced seeds and BLAST"""
+        """Identify TE locations using BLAST"""
         print("Identifying TE locations...")
-        
-        # Generate spaced seeds
-        seeds = self._generate_spaced_seeds()
         
         # First, get the actual chromosome IDs from the genome
         valid_chromosomes = set(self.genome_sequences.keys())
@@ -252,72 +247,67 @@ class YeastTEAnalyzer:
         for family in TEFamily:
             consensus_file = self.te_consensus[family]
             
-            # Read consensus sequence
-            with open(consensus_file) as f:
-                consensus_record = next(SeqIO.parse(f, 'fasta'))
-                consensus_seq = str(consensus_record.seq)
-            
-            # Generate seed hits from consensus sequence
-            consensus_hits = set()
-            for seed in seeds:
-                consensus_hits.update(self._generate_seed_hits(consensus_seq, seed))
-            
-            print(f"Generated {len(consensus_hits)} unique seed hits for {family.value}")
-            
-            # Create a BLAST database with more sensitive parameters
-            output_file = f"temp_blast_{family.value}.xml"
+            # Create a BLAST database with parameters optimized for TEs
+            output_file = f"temp_blast_{family.value}.txt"
             blastn_cline = NcbiblastnCommandline(
                 query=consensus_file,
                 db=self.blast_db,
-                outfmt=5,
+                outfmt="6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore",
                 out=output_file,
-                word_size=7,          # Reduced word size for higher sensitivity
-                evalue=1e-3,         # More permissive e-value
+                word_size=11,         # Standard for TEs
+                evalue=1e-10,        # Stringent e-value
                 dust='no',
                 soft_masking='false',
-                task='blastn',       # Changed to blastn for better sensitivity
+                task='blastn',       # Standard BLAST
                 gapopen=5,
                 gapextend=2,
-                reward=1,
-                penalty=-1,
-                max_target_seqs=1000  # Increase number of hits
+                reward=2,
+                penalty=-3,
+                max_target_seqs=1000,
+                culling_limit=10     # Limit overlapping hits
             )
             
-            print(f"Running BLAST search for {family.value}...")
+            print(f"\nRunning BLAST search for {family.value}...")
             stdout, stderr = blastn_cline()
             
-            # Parse BLAST results
+            # Parse tab-delimited BLAST results
             hit_count = 0
-            with open(output_file) as result_handle:
-                blast_records = NCBIXML.parse(result_handle)
-                for record in blast_records:
-                    for alignment in record.alignments:
-                        for hsp in alignment.hsps:
-                            # More permissive filtering
-                            if hsp.align_length >= 50:  # Minimum alignment length of 50bp
-                                # Extract chromosome ID
-                                blast_title = alignment.title.split()
-                                chrom_id = None
-                                for title_part in blast_title:
-                                    if title_part in valid_chromosomes:
-                                        chrom_id = title_part
-                                        break
-                                
-                                if chrom_id is None:
-                                    continue
-                                
-                                te = TEAnnotation(
-                                    family=family,
-                                    chromosome=chrom_id,
-                                    start=min(hsp.sbjct_start, hsp.sbjct_end),
-                                    end=max(hsp.sbjct_start, hsp.sbjct_end),
-                                    strand='+' if hsp.sbjct_start < hsp.sbjct_end else '-',
-                                    sequence=hsp.sbjct
-                                )
-                                self.te_annotations.append(te)
-                                hit_count += 1
+            if os.path.exists(output_file):
+                with open(output_file) as f:
+                    for line in f:
+                        fields = line.strip().split('\t')
+                        if len(fields) >= 12:
+                            pident = float(fields[2])
+                            length = int(fields[3])
+                            
+                            # More stringent filtering based on SGD consensus
+                            if length >= 100 and pident >= 80:  # At least 100bp with 80% identity
+                                chrom_id = fields[1]
+                                if chrom_id in valid_chromosomes:
+                                    start = min(int(fields[8]), int(fields[9]))
+                                    end = max(int(fields[8]), int(fields[9]))
+                                    
+                                    # Get the actual sequence from the genome
+                                    sequence = self.genome_sequences[chrom_id][start-1:end]
+                                    
+                                    te = TEAnnotation(
+                                        family=family,
+                                        chromosome=chrom_id,
+                                        start=start,
+                                        end=end,
+                                        strand='+' if int(fields[8]) < int(fields[9]) else '-',
+                                        sequence=sequence
+                                    )
+                                    self.te_annotations.append(te)
+                                    hit_count += 1
             
             print(f"Found {hit_count} hits for {family.value}")
+            if hit_count == 0:
+                # Debug: Check consensus file content
+                with open(consensus_file) as f:
+                    print(f"Consensus file content for {family.value}:")
+                    print(f.read()[:200])
+            
             os.remove(output_file)
 
     def _merge_overlapping_hits(self):
