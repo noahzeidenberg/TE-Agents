@@ -19,6 +19,7 @@ import shutil
 from Bio.Blast.Applications import NcbimakeblastdbCommandline
 import json
 from pathlib import Path
+from itertools import product
 
 Entrez.email = "nzeidenb@uoguelph.ca"
 
@@ -89,6 +90,18 @@ class TEAnnotation:
                 self.start == other.start and
                 self.end == other.end and
                 self.strand == other.strand)
+
+class SpacedSeed:
+    def __init__(self, pattern: str):
+        """
+        Initialize a spaced seed with a pattern string.
+        '1' represents match position, '0' represents don't care position
+        Example: '11011' requires matches at positions 0,1,3,4
+        """
+        self.pattern = pattern
+        self.weight = pattern.count('1')  # Number of required matches
+        self.length = len(pattern)
+        self.match_positions = [i for i, c in enumerate(pattern) if c == '1']
 
 class YeastTEAnalyzer:
     def __init__(self, genome_file: str, gff_file: str):
@@ -205,9 +218,32 @@ class YeastTEAnalyzer:
                         'type': fields[2]
                     })
 
+    def _generate_spaced_seeds(self) -> List[SpacedSeed]:
+        """Generate optimized spaced seeds for TE detection"""
+        # These patterns are optimized for TE detection based on literature
+        # Multiple seeds increase sensitivity
+        seed_patterns = [
+            '1111100001111',  # Optimized for ~70-80% similarity
+            '11011011000011',  # Good for finding TEs with internal deletions
+            '111010010100111'  # Effective for finding degraded LTRs
+        ]
+        return [SpacedSeed(pattern) for pattern in seed_patterns]
+
+    def _generate_seed_hits(self, sequence: str, seed: SpacedSeed) -> Set[str]:
+        """Generate all seed hits from a sequence using a spaced seed pattern"""
+        hits = set()
+        for i in range(len(sequence) - seed.length + 1):
+            # Extract characters at match positions only
+            hit = ''.join(sequence[i + pos] for pos in seed.match_positions)
+            hits.add(hit)
+        return hits
+
     def _identify_te_locations(self):
-        """Identify TE locations using BLAST"""
+        """Identify TE locations using spaced seeds and BLAST"""
         print("Identifying TE locations...")
+        
+        # Generate spaced seeds
+        seeds = self._generate_spaced_seeds()
         
         # First, get the actual chromosome IDs from the genome
         valid_chromosomes = set(self.genome_sequences.keys())
@@ -216,7 +252,19 @@ class YeastTEAnalyzer:
         for family in TEFamily:
             consensus_file = self.te_consensus[family]
             
-            # Run BLAST
+            # Read consensus sequence
+            with open(consensus_file) as f:
+                consensus_record = next(SeqIO.parse(f, 'fasta'))
+                consensus_seq = str(consensus_record.seq)
+            
+            # Generate seed hits from consensus sequence
+            consensus_hits = set()
+            for seed in seeds:
+                consensus_hits.update(self._generate_seed_hits(consensus_seq, seed))
+            
+            print(f"Generated {len(consensus_hits)} unique seed hits for {family.value}")
+            
+            # Create a BLAST database with more sensitive parameters
             output_file = f"temp_blast_{family.value}.xml"
             blastn_cline = NcbiblastnCommandline(
                 query=consensus_file,
@@ -224,24 +272,38 @@ class YeastTEAnalyzer:
                 outfmt=5,
                 out=output_file,
                 word_size=11,
-                evalue=1e-10,
-                dust="no"
+                evalue=1e-5,  # More permissive e-value
+                dust='no',
+                soft_masking='false',
+                template_type='coding',  # Optimized for coding sequences
+                template_length=16,
+                gapopen=5,
+                gapextend=2,
+                reward=2,
+                penalty=-3,
+                min_raw_gapped_score=50
             )
             stdout, stderr = blastn_cline()
             
-            # Parse BLAST results
+            # Parse BLAST results and filter using seed hits
             with open(output_file) as result_handle:
                 blast_records = NCBIXML.parse(result_handle)
                 for record in blast_records:
                     for alignment in record.alignments:
                         for hsp in alignment.hsps:
-                            # Filter hits by identity and length
-                            identity = (hsp.identities / hsp.align_length) * 100
-                            if identity >= 80 and hsp.align_length >= 100:
-                                # Extract the actual chromosome ID from the BLAST title
+                            # Check if any seed hits confirm this match
+                            subject_seq = hsp.sbjct
+                            has_seed_match = False
+                            
+                            for seed in seeds:
+                                subject_hits = self._generate_seed_hits(subject_seq, seed)
+                                if subject_hits & consensus_hits:  # If there's any overlap
+                                    has_seed_match = True
+                                    break
+                            
+                            if has_seed_match:
+                                # Extract chromosome ID
                                 blast_title = alignment.title.split()
-                                
-                                # Try to find a matching chromosome ID
                                 chrom_id = None
                                 for title_part in blast_title:
                                     if title_part in valid_chromosomes:
@@ -249,7 +311,6 @@ class YeastTEAnalyzer:
                                         break
                                 
                                 if chrom_id is None:
-                                    print(f"Warning: Could not find valid chromosome ID in BLAST title: {alignment.title}")
                                     continue
                                 
                                 te = TEAnnotation(
@@ -263,6 +324,44 @@ class YeastTEAnalyzer:
                                 self.te_annotations.append(te)
             
             os.remove(output_file)
+            print(f"Completed search for {family.value}")
+
+    def _merge_overlapping_hits(self):
+        """Merge overlapping TE hits to avoid redundant annotations"""
+        print("Merging overlapping hits...")
+        merged = []
+        
+        # Sort by chromosome and start position
+        sorted_tes = sorted(
+            self.te_annotations,
+            key=lambda x: (x.chromosome, x.start)
+        )
+        
+        if not sorted_tes:
+            return
+        
+        current = sorted_tes[0]
+        
+        for next_te in sorted_tes[1:]:
+            if (current.chromosome == next_te.chromosome and 
+                next_te.start <= current.end + 100):  # Allow small gaps
+                # Merge the TEs
+                current = TEAnnotation(
+                    family=current.family,
+                    chromosome=current.chromosome,
+                    start=min(current.start, next_te.start),
+                    end=max(current.end, next_te.end),
+                    strand=current.strand,
+                    sequence=current.sequence  # Keep the longer sequence
+                    if len(current.sequence) > len(next_te.sequence)
+                    else next_te.sequence
+                )
+            else:
+                merged.append(current)
+                current = next_te
+        
+        merged.append(current)
+        self.te_annotations = merged
 
     def _analyze_nearby_features(self, te: TEAnnotation) -> List[str]:
         """Analyze genomic features near the TE"""
@@ -290,40 +389,54 @@ class YeastTEAnalyzer:
             
         nearby = self.nearby_features.get(te_id, [])
         
-        # Check for tRNA genes or other silencing-associated features
+        # Check for tRNA genes or other silencing-associated features within 1kb
         for feature in nearby:
-            if 'tRNA' in feature.get('type', ''):
+            feature_type = feature.get('type', '').lower()
+            if any(mark in feature_type for mark in ['trna', 'telomer', 'centromer', 'silenc']):
                 return True
-            # Add other silencing mark checks here
         
         return False
 
     def _analyze_te_status(self, te: TEAnnotation):
         """Analyze the status of a TE"""
-        # First analyze nearby features
-        self._analyze_nearby_features(te)
-        
-        # Check various status conditions
+        # First check truncation as it's the most common inactivation mechanism
         if self._check_truncation(te):
             te.status = TEStatus.TRUNCATED
             te.inactivation_reason = InactivationReason.TRUNCATION
-        elif self._check_mutations(te):
+            return
+        
+        # Then check for mutations
+        if self._check_mutations(te):
             te.status = TEStatus.MUTATED
             te.inactivation_reason = InactivationReason.MUTATION
-        elif self._check_silencing_marks(te):
+            return
+        
+        # Finally check for silencing marks
+        if self._check_silencing_marks(te):
             te.status = TEStatus.SILENCED
             te.inactivation_reason = InactivationReason.SILENCING
-        else:
-            te.status = TEStatus.ACTIVE
-            te.inactivation_reason = InactivationReason.NONE
+            return
+        
+        # If none of the above, consider it potentially active
+        te.status = TEStatus.ACTIVE
+        te.inactivation_reason = InactivationReason.NONE
 
     def _check_truncation(self, te: TEAnnotation) -> bool:
-        """Check for truncation"""
-        sequence = self.genome_sequences[te.chromosome][te.start:te.end]
-        if len(sequence) < 0.9 * len(self.te_consensus[te.family]):
-            te.inactivation_reason = InactivationReason.TRUNCATION
-            return True
-        return False
+        """Check if TE is truncated based on expected lengths"""
+        # Define expected lengths for each TE family (in base pairs)
+        expected_lengths = {
+            TEFamily.TY1: 5900,  # ~5.9 kb
+            TEFamily.TY2: 5900,  # ~5.9 kb
+            TEFamily.TY3: 5400,  # ~5.4 kb
+            TEFamily.TY4: 6200,  # ~6.2 kb
+            TEFamily.TY5: 5400   # ~5.4 kb
+        }
+        
+        # Allow for some variation (e.g., 80% of expected length)
+        min_length = expected_lengths[te.family] * 0.8
+        actual_length = te.end - te.start + 1
+        
+        return actual_length < min_length
 
     def _run_muscle_alignment(self, sequence1_file: str, sequence2_file: str, output_file: str) -> None:
         """Run MUSCLE alignment using subprocess"""
@@ -350,8 +463,6 @@ class YeastTEAnalyzer:
     def _check_mutations(self, te: TEAnnotation) -> bool:
         """Check for inactivating mutations in the TE sequence"""
         consensus_file = self.te_consensus[te.family]
-        
-        # Create a temporary file for the TE sequence
         temp_sequence_file = f"temp_te_{te.get_id()}.fasta"
         output_file = f"temp_alignment_{te.get_id()}.fasta"
         
@@ -364,7 +475,6 @@ class YeastTEAnalyzer:
             self._run_muscle_alignment(consensus_file, temp_sequence_file, output_file)
             
             # Analyze alignment for mutations
-            has_inactivating_mutations = False
             with open(output_file) as f:
                 alignments = list(SeqIO.parse(f, "fasta"))
                 if len(alignments) == 2:
@@ -372,14 +482,29 @@ class YeastTEAnalyzer:
                     te_seq = str(alignments[1].seq)
                     
                     # Calculate sequence identity
-                    matches = sum(1 for a, b in zip(consensus_seq, te_seq) if a == b)
-                    total = len(consensus_seq)
-                    identity = (matches / total) * 100
+                    matches = sum(1 for a, b in zip(consensus_seq, te_seq) if a == b and a != '-' and b != '-')
+                    aligned_positions = sum(1 for a, b in zip(consensus_seq, te_seq) if a != '-' and b != '-')
                     
-                    # Consider it mutated if identity is below 90%
-                    has_inactivating_mutations = identity < 90
-        
-            return has_inactivating_mutations
+                    if aligned_positions == 0:
+                        return True
+                    
+                    identity = (matches / aligned_positions) * 100
+                    
+                    # Check for frameshift mutations (gaps of non-3 length)
+                    gaps = [len(gap) for gap in te_seq.split('-') if gap]
+                    has_frameshift = any(gap % 3 != 0 for gap in gaps)
+                    
+                    # Check for premature stop codons
+                    has_premature_stop = False
+                    for i in range(0, len(te_seq) - 2, 3):
+                        codon = te_seq[i:i+3].upper()
+                        if codon in ['TAA', 'TAG', 'TGA']:
+                            has_premature_stop = True
+                            break
+                    
+                    return identity < 90 or has_frameshift or has_premature_stop
+            
+            return False
         
         finally:
             # Clean up temporary files
@@ -440,27 +565,40 @@ class YeastTEAnalyzer:
         print("Loading genome sequences...")
         self._load_genome()
         
-        # Set up BLAST database
+        # Configure BLAST database with optimized parameters
         print("Setting up BLAST database...")
         makeblastdb_cline = NcbimakeblastdbCommandline(
             dbtype="nucl",
             input_file=self.genome_file,
-            out=self.blast_db
+            out=self.blast_db,
+            parse_seqids=True
         )
-        stdout, stderr = makeblastdb_cline()
+        makeblastdb_cline()
         
-        if stderr:
-            print(f"BLAST database creation stderr: {stderr}")
-        
-        # Identify and analyze TEs
+        # Identify TEs using spaced seeds
         self._identify_te_locations()
         
-        # Analyze each TE
-        for te in self.te_annotations:
-            self._analyze_te_status(te)
+        # Merge overlapping hits
+        self._merge_overlapping_hits()
         
-        # Clean up temporary files
-        self._cleanup()
+        # Continue with status analysis
+        print("\nAnalyzing TE status...")
+        total = len(self.te_annotations)
+        for i, te in enumerate(self.te_annotations, 1):
+            self._analyze_te_status(te)
+            if i % 10 == 0:  # Progress update every 10 TEs
+                print(f"Processed {i}/{total} TEs...")
+        
+        # Print summary statistics
+        status_counts = {}
+        for te in self.te_annotations:
+            status_counts[te.status.value] = status_counts.get(te.status.value, 0) + 1
+        
+        print("\nAnalysis Summary:")
+        print(f"Total TEs found: {total}")
+        print("\nTE Status Distribution:")
+        for status, count in status_counts.items():
+            print(f"{status}: {count}")
 
     def _cleanup(self):
         """Clean up temporary files"""
