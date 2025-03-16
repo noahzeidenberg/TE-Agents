@@ -133,50 +133,40 @@ class YeastTEAnalyzer:
         ])
 
     def _load_te_consensus(self):
-        """Load consensus sequences from SGD"""
-        print("Fetching TE consensus sequences from SGD...")
+        """Load consensus sequences from local files"""
+        print("Loading TE consensus sequences from local files...")
         
-        # Define SGD systematic names for each TE family
-        te_sgd_ids = {
-            TEFamily.TY1: "S000006787",  # YALWdelta1
-            TEFamily.TY2: "S000006983",  # YGRWTy2-2
-            TEFamily.TY3: "S000006984",  # YGRWTy3-1
-            TEFamily.TY4: "S000006991",  # YHLWTy4-1
-            TEFamily.TY5: "S000006831"   # YCLWTy5-1
+        # Define local file paths for each TE family
+        te_files = {
+            TEFamily.TY1: "consensus/S288C_YALWdelta1_YALWdelta1_genomic.fsa",
+            TEFamily.TY2: "consensus/S288C_YGRWTy2-2_genomic.fsa",
+            TEFamily.TY3: "consensus/S288C_YGRWTy3-1_genomic.fsa",
+            TEFamily.TY4: "consensus/S288C_YHLWTy4-1_genomic.fsa",
+            TEFamily.TY5: "consensus/S288C_YCLWTy5-1_genomic.fsa"
         }
         
-        # Create a temporary directory for consensus files
-        os.makedirs("temp_consensus", exist_ok=True)
-        
-        for family, sgd_id in te_sgd_ids.items():
-            consensus_file = f"temp_consensus/{family.value}.fasta"
-            
+        for family, file_path in te_files.items():
             try:
-                # Fetch sequence from SGD
-                url = f"https://www.yeastgenome.org/sequence/{sgd_id}"
-                response = requests.get(url)
-                response.raise_for_status()
-                
-                sequence_data = response.text
-                
-                # Extract the FASTA sequence
-                if '>' in sequence_data:
-                    # Write cleaned FASTA
-                    with open(consensus_file, 'w') as f:
-                        f.write(f">{family.value}_consensus\n")
-                        f.write(sequence_data.split('\n', 1)[1])
+                # Verify file exists
+                if not os.path.exists(file_path):
+                    print(f"Warning: Consensus file not found for {family.value}: {file_path}")
+                    continue
                     
-                    self.te_consensus[family] = consensus_file
-                    print(f"Retrieved consensus for {family.value} from SGD")
+                # Read and validate the consensus sequence
+                with open(file_path) as f:
+                    sequence_data = f.read()
                     
-                    # Debug: Print sequence info
-                    with open(consensus_file) as f:
-                        seq = ''.join(line.strip() for line in f if not line.startswith('>'))
-                        print(f"Sequence length: {len(seq)}")
-                        print(f"First 50 bp: {seq[:50]}")
-            
+                # Store the file path directly since it's already in FASTA format
+                self.te_consensus[family] = file_path
+                
+                # Debug: Print sequence info
+                seq = ''.join(line.strip() for line in sequence_data.split('\n')[1:])
+                print(f"Loaded consensus for {family.value}")
+                print(f"Sequence length: {len(seq)}")
+                print(f"First 50 bp: {seq[:50]}")
+                
             except Exception as e:
-                print(f"Error fetching consensus for {family.value}: {e}")
+                print(f"Error loading consensus for {family.value}: {e}")
                 continue
 
     def _load_genome(self):
@@ -245,6 +235,10 @@ class YeastTEAnalyzer:
         print(f"Valid chromosome IDs: {', '.join(valid_chromosomes)}")
         
         for family in TEFamily:
+            if family not in self.te_consensus:
+                print(f"Skipping {family.value}: no consensus sequence available")
+                continue
+            
             consensus_file = self.te_consensus[family]
             
             # Create a BLAST database with parameters optimized for TEs
@@ -254,17 +248,16 @@ class YeastTEAnalyzer:
                 db=self.blast_db,
                 outfmt="6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore",
                 out=output_file,
-                word_size=11,         # Standard for TEs
-                evalue=1e-10,        # Stringent e-value
+                word_size=11,
+                evalue=1e-5,        # More permissive e-value for short sequences
                 dust='no',
                 soft_masking='false',
-                task='blastn',       # Standard BLAST
+                task='blastn',
                 gapopen=5,
                 gapextend=2,
                 reward=2,
                 penalty=-3,
-                max_target_seqs=1000,
-                culling_limit=10     # Limit overlapping hits
+                max_target_seqs=1000
             )
             
             print(f"\nRunning BLAST search for {family.value}...")
@@ -274,14 +267,23 @@ class YeastTEAnalyzer:
             hit_count = 0
             if os.path.exists(output_file):
                 with open(output_file) as f:
-                    for line in f:
-                        fields = line.strip().split('\t')
+                    content = f.read()
+                    if not content.strip():
+                        print(f"No BLAST hits found for {family.value}")
+                        print("Debug: Checking BLAST parameters and consensus sequence...")
+                        continue
+                        
+                    for line in content.strip().split('\n'):
+                        fields = line.split('\t')
                         if len(fields) >= 12:
                             pident = float(fields[2])
                             length = int(fields[3])
                             
-                            # More stringent filtering based on SGD consensus
-                            if length >= 100 and pident >= 80:  # At least 100bp with 80% identity
+                            # Adjust filtering based on consensus length
+                            min_length = 50  # Minimum length for delta elements
+                            min_identity = 80  # Minimum identity percentage
+                            
+                            if length >= min_length and pident >= min_identity:
                                 chrom_id = fields[1]
                                 if chrom_id in valid_chromosomes:
                                     start = min(int(fields[8]), int(fields[9]))
@@ -302,12 +304,6 @@ class YeastTEAnalyzer:
                                     hit_count += 1
             
             print(f"Found {hit_count} hits for {family.value}")
-            if hit_count == 0:
-                # Debug: Check consensus file content
-                with open(consensus_file) as f:
-                    print(f"Consensus file content for {family.value}:")
-                    print(f.read()[:200])
-            
             os.remove(output_file)
 
     def _merge_overlapping_hits(self):
