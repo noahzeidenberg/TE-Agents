@@ -14,6 +14,8 @@ from collections import defaultdict
 import re
 import subprocess
 import tempfile
+from Bio import Entrez
+import shutil
 
 class TEFamily(Enum):
     """Yeast TE families"""
@@ -59,6 +61,9 @@ class YeastTEAnalyzer:
         self.nearby_features = {}  # Initialize nearby_features as empty dict
         self.gene_annotations = {}  # Store gene locations from GFF
         
+        # Initialize consensus sequences first
+        self._load_te_consensus()
+        
         self._setup_blast_db()
         self._load_gff_annotations()
         
@@ -72,41 +77,45 @@ class YeastTEAnalyzer:
             "-out", self.blast_db
         ])
 
-    def _load_te_consensus(self) -> Dict[TEFamily, str]:
+    def _load_te_consensus(self):
         """Load consensus sequences for each TE family from NCBI"""
         print("Fetching TE consensus sequences from NCBI...")
         
-        # NCBI accession numbers for S. cerevisiae TE consensus sequences
-        consensus_accessions = {
-            TEFamily.TY1: "M18706.1",  # Ty1 consensus
-            TEFamily.TY2: "X03840.1",  # Ty2 consensus
-            TEFamily.TY3: "M34549.1",  # Ty3 consensus
-            TEFamily.TY4: "X67284.1",  # Ty4 consensus
-            TEFamily.TY5: "U19263.1"   # Ty5 consensus
+        # Define NCBI accession numbers for each TE family
+        te_accessions = {
+            TEFamily.TY1: "M18706.1",
+            TEFamily.TY2: "X03840.1",
+            TEFamily.TY3: "M34549.1",
+            TEFamily.TY4: "X67284.1",
+            TEFamily.TY5: "U19263.1"
         }
         
-        consensus = {}
-        for family, accession in consensus_accessions.items():
+        # Create a temporary directory for consensus files
+        os.makedirs("temp_consensus", exist_ok=True)
+        
+        for family, accession in te_accessions.items():
+            # Fetch sequence from NCBI
+            consensus_file = f"temp_consensus/{family.value}.fasta"
+            
             try:
-                # Fetch sequence from NCBI
-                url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nucleotide&id={accession}&rettype=fasta&retmode=text"
-                response = requests.get(url)
-                response.raise_for_status()
+                # Use Entrez to fetch the sequence
+                handle = Entrez.efetch(
+                    db="nucleotide",
+                    id=accession,
+                    rettype="fasta",
+                    retmode="text"
+                )
                 
-                # Create temporary file for the consensus sequence
-                with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.fasta') as f:
-                    f.write(response.text)
-                    consensus[family] = f.name
-                    print(f"Retrieved consensus for {family.value}: {accession}")
-                    
-            except requests.exceptions.RequestException as e:
+                # Save to temporary file
+                with open(consensus_file, 'w') as f:
+                    f.write(handle.read())
+                
+                self.te_consensus[family] = consensus_file
+                print(f"Retrieved consensus for {family.value}: {accession}")
+                
+            except Exception as e:
                 print(f"Error fetching consensus for {family.value}: {e}")
                 continue
-        
-        if not consensus:
-            raise ValueError("Failed to retrieve any consensus sequences from NCBI")
-        
-        return consensus
 
     def _load_genome(self):
         """Load the genome sequences"""
@@ -349,78 +358,51 @@ class YeastTEAnalyzer:
         return False
 
     def analyze(self):
-        """Main analysis function"""
+        """Run the complete TE analysis"""
+        # Load required data
+        print("Loading GFF annotations...")
+        self._load_gff_annotations()
+        
+        print("Loading genome sequences...")
         self._load_genome()
+        
+        # Set up BLAST database
+        print("Setting up BLAST database...")
+        makeblastdb_cline = NcbiblastdbCommandline(
+            dbtype="nucl",
+            input_file=self.genome_file,
+            out=self.blast_db
+        )
+        makeblastdb_cline()
+        
+        # Identify and analyze TEs
         self._identify_te_locations()
         
+        # Analyze each TE
         for te in self.te_annotations:
             self._analyze_te_status(te)
-    def _check_silencing_marks(self, te: TEAnnotation) -> bool:
-        """Check for epigenetic silencing marks"""
-        # Look for known silencing patterns in flanking regions
-        window = 500
-        chromosome = self.genome_sequences[te.chromosome]
-        upstream = chromosome[max(0, te.start - window):te.start]
-        downstream = chromosome[te.end:min(len(chromosome), te.end + window)]
         
-        # Check for tRNA genes nearby (known to attract silencing)
-        if 'tRNA' in str(self.nearby_features):
-            return True
-            
-        # Check for telomeric regions
-        if te.start < 10000 or te.end > len(chromosome) - 10000:
-            return True
-            
-        return False
+        # Clean up temporary files
+        self._cleanup()
 
-    def _check_recombination(self, te: TEAnnotation) -> bool:
-        """Check for recombination events"""
-        # Look for solo LTRs or truncated elements
-        if len(te.sequence) < 300:  # Typical LTR length
-            return True
-            
-        # Check for hybrid elements
-        other_tes = [t for t in self.te_annotations 
-                    if t.chromosome == te.chromosome and 
-                    abs(t.start - te.end) < 1000]
+    def _cleanup(self):
+        """Clean up temporary files"""
+        # Remove BLAST database files
+        for ext in [".nhr", ".nin", ".nsq"]:
+            try:
+                os.remove(self.blast_db + ext)
+            except OSError:
+                pass
         
-        if other_tes:
-            return True
-            
-        return False
+        # Remove temporary consensus files
+        try:
+            shutil.rmtree("temp_consensus")
+        except OSError:
+            pass
 
-    def _analyze_nearby_features(self, te: TEAnnotation):
-        """Analyze genomic features near the TE using GFF annotations"""
-        window = 1000  # 1kb window
-        features = {}
-        
-        if te.chromosome in self.gene_annotations:
-            nearby_genes = []
-            for gene in self.gene_annotations[te.chromosome]:
-                # Check if gene is within window of TE
-                if (abs(gene['start'] - te.end) < window or 
-                    abs(gene['end'] - te.start) < window):
-                    nearby_genes.append({
-                        'id': gene['id'],
-                        'type': gene['type'],
-                        'distance': min(
-                            abs(gene['start'] - te.end),
-                            abs(gene['end'] - te.start)
-                        )
-                    })
-            if nearby_genes:
-                features['nearby_genes'] = nearby_genes
-        
-        te.nearby_features = features
-
-    def analyze(self):
-        """Main analysis function"""
-        self._load_genome()
-        self._identify_te_locations()
-        
-        for te in self.te_annotations:
-            self._analyze_te_status(te)
-            self._analyze_nearby_features(te)
+    def __del__(self):
+        """Destructor to ensure cleanup"""
+        self._cleanup()
 
     def generate_report(self) -> pd.DataFrame:
         """Generate a detailed report of findings"""
@@ -438,23 +420,6 @@ class YeastTEAnalyzer:
                 'Nearby_Features': str(te.nearby_features)
             })
         return pd.DataFrame(data)
-
-    def __del__(self):
-        """Cleanup temporary files"""
-        # Remove BLAST database files
-        for ext in ['.nhr', '.nin', '.nsq']:
-            try:
-                os.remove(self.blast_db + ext)
-            except (OSError, AttributeError):
-                pass
-            
-        # Remove temporary consensus files
-        if hasattr(self, 'te_consensus'):
-            for temp_file in self.te_consensus.values():
-                try:
-                    os.remove(temp_file)
-                except OSError:
-                    pass
 
 def main():
     parser = argparse.ArgumentParser(description='Analyze TEs in S. cerevisiae genome')
