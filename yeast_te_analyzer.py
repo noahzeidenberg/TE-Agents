@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 from Bio import Entrez
 import shutil
+from Bio.Blast.Applications import NcbimakeblastdbCommandline
 
 class TEFamily(Enum):
     """Yeast TE families"""
@@ -368,12 +369,15 @@ class YeastTEAnalyzer:
         
         # Set up BLAST database
         print("Setting up BLAST database...")
-        makeblastdb_cline = NcbiblastdbCommandline(
+        makeblastdb_cline = NcbimakeblastdbCommandline(
             dbtype="nucl",
             input_file=self.genome_file,
             out=self.blast_db
         )
-        makeblastdb_cline()
+        stdout, stderr = makeblastdb_cline()
+        
+        if stderr:
+            print(f"BLAST database creation stderr: {stderr}")
         
         # Identify and analyze TEs
         self._identify_te_locations()
