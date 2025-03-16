@@ -36,27 +36,42 @@ class TEStatus(Enum):
     SILENCED = "silenced"
     UNKNOWN = "unknown"
 
-@dataclass(frozen=True)  # Make the class immutable and hashable
+@dataclass
 class TEAnnotation:
-    """Stores information about a TE instance"""
     family: TEFamily
     chromosome: str
     start: int
     end: int
     strand: str
-    status: TEStatus = TEStatus.UNKNOWN
-    inactivation_reason: Optional[str] = None
-    sequence: Optional[str] = None
-    mutations: Optional[List[str]] = None
-    nearby_features: Optional[Dict[str, str]] = None
-
+    sequence: str
+    _status: TEStatus = TEStatus.UNKNOWN  # Private status field
+    
     def __hash__(self):
-        # Implement custom hash function using immutable attributes
+        # Hash only the immutable identifying attributes
         return hash((self.family, self.chromosome, self.start, self.end, self.strand))
+    
+    @property
+    def status(self) -> TEStatus:
+        """Get the TE status"""
+        return self._status
+    
+    @status.setter
+    def status(self, value: TEStatus):
+        """Set the TE status"""
+        object.__setattr__(self, '_status', value)
     
     def get_id(self) -> str:
         """Generate a unique identifier for this TE"""
         return f"{self.chromosome}_{self.start}_{self.end}_{self.family.value}"
+    
+    def __eq__(self, other):
+        if not isinstance(other, TEAnnotation):
+            return NotImplemented
+        return (self.family == other.family and
+                self.chromosome == other.chromosome and
+                self.start == other.start and
+                self.end == other.end and
+                self.strand == other.strand)
 
 class YeastTEAnalyzer:
     def __init__(self, genome_file: str, gff_file: str):
@@ -198,7 +213,6 @@ class YeastTEAnalyzer:
                             identity = (hsp.identities / hsp.align_length) * 100
                             if identity >= 80 and hsp.align_length >= 100:
                                 # Extract the actual chromosome ID from the BLAST title
-                                # The title format might be like "gnl|BL_ORD_ID|3 NC_001135.5"
                                 blast_title = alignment.title.split()
                                 
                                 # Try to find a matching chromosome ID
@@ -215,10 +229,9 @@ class YeastTEAnalyzer:
                                 te = TEAnnotation(
                                     family=family,
                                     chromosome=chrom_id,
-                                    start=hsp.sbjct_start,
-                                    end=hsp.sbjct_end,
+                                    start=min(hsp.sbjct_start, hsp.sbjct_end),
+                                    end=max(hsp.sbjct_start, hsp.sbjct_end),
                                     strand='+' if hsp.sbjct_start < hsp.sbjct_end else '-',
-                                    status=TEStatus.UNKNOWN,
                                     sequence=hsp.sbjct
                                 )
                                 self.te_annotations.append(te)
