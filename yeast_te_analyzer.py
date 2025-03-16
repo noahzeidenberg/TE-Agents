@@ -84,7 +84,7 @@ class YeastTEAnalyzer:
     def _load_genome(self):
         """Load the genome sequences"""
         print("Loading genome sequences...")
-        with gzip.open(self.genome_file, 'rt') as f:
+        with open(self.genome_file, 'rt') as f:
             for record in SeqIO.parse(f, 'fasta'):
                 self.genome_sequences[record.id] = str(record.seq)
 
