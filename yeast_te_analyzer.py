@@ -18,6 +18,8 @@ from Bio import Entrez
 import shutil
 from Bio.Blast.Applications import NcbimakeblastdbCommandline
 
+Entrez.email = "nzeidenb@uoguelph.ca"
+
 class TEFamily(Enum):
     """Yeast TE families"""
     TY1 = "Ty1"
