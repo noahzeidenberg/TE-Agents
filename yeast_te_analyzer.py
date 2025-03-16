@@ -18,7 +18,7 @@ from Bio import Entrez
 import shutil
 from Bio.Blast.Applications import NcbimakeblastdbCommandline
 import json
-from Bio.Emboss.Applications import MuscleCommandline
+from pathlib import Path
 
 Entrez.email = "nzeidenb@uoguelph.ca"
 
@@ -325,53 +325,69 @@ class YeastTEAnalyzer:
             return True
         return False
 
+    def _run_muscle_alignment(self, sequence1_file: str, sequence2_file: str, output_file: str) -> None:
+        """Run MUSCLE alignment using subprocess"""
+        try:
+            result = subprocess.run(
+                [
+                    'muscle',
+                    '-in', sequence1_file,
+                    '-in2', sequence2_file,
+                    '-out', output_file,
+                    '-quiet',
+                    '-maxiters', '1'
+                ],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            if result.stderr:
+                print(f"MUSCLE stderr: {result.stderr}")
+        except subprocess.CalledProcessError as e:
+            print(f"MUSCLE alignment failed: {e}")
+            raise
+
     def _check_mutations(self, te: TEAnnotation) -> bool:
         """Check for inactivating mutations in the TE sequence"""
         consensus_file = self.te_consensus[te.family]
         
         # Create a temporary file for the TE sequence
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.fasta', delete=False) as temp_file:
-            temp_file.write(f">TE_{te.get_id()}\n{te.sequence}\n")
-            temp_sequence_file = temp_file.name
+        temp_sequence_file = f"temp_te_{te.get_id()}.fasta"
+        output_file = f"temp_alignment_{te.get_id()}.fasta"
         
         try:
+            # Write TE sequence to temporary file
+            with open(temp_sequence_file, 'w') as f:
+                f.write(f">TE_{te.get_id()}\n{te.sequence}\n")
+            
             # Run MUSCLE alignment
-            output_file = f"temp_alignment_{te.get_id()}.fasta"
-            muscle_cline = MuscleCommandline(
-                input=consensus_file,
-                addsequences=temp_sequence_file,
-                out=output_file,
-                quiet=True,  # Suppress MUSCLE output
-                maxiters=1   # Fast alignment is sufficient for our needs
-            )
-            stdout, stderr = muscle_cline()
+            self._run_muscle_alignment(consensus_file, temp_sequence_file, output_file)
             
             # Analyze alignment for mutations
-            aligned_seqs = {}
-            for record in SeqIO.parse(output_file, "fasta"):
-                aligned_seqs[record.id] = str(record.seq)
-            
-            query_seq = aligned_seqs["TE_" + te.get_id()]
-            consensus_seq = aligned_seqs[consensus_file.split('/')[-1].split('.')[0]]
-            
-            mutations = []
-            for i, (q, c) in enumerate(zip(query_seq, consensus_seq)):
-                if q != c and q != '-' and c != '-':
-                    mutations.append(f"{c}{i+1}{q}")
-            
-            has_inactivating_mutations = self._has_critical_mutations(mutations)
-            
-            if has_inactivating_mutations:
-                te.inactivation_reason = InactivationReason.MUTATION
-                te.mutations = mutations
-            
+            has_inactivating_mutations = False
+            with open(output_file) as f:
+                alignments = list(SeqIO.parse(f, "fasta"))
+                if len(alignments) == 2:
+                    consensus_seq = str(alignments[0].seq)
+                    te_seq = str(alignments[1].seq)
+                    
+                    # Calculate sequence identity
+                    matches = sum(1 for a, b in zip(consensus_seq, te_seq) if a == b)
+                    total = len(consensus_seq)
+                    identity = (matches / total) * 100
+                    
+                    # Consider it mutated if identity is below 90%
+                    has_inactivating_mutations = identity < 90
+        
             return has_inactivating_mutations
         
         finally:
             # Clean up temporary files
-            os.remove(temp_sequence_file)
-            if os.path.exists(output_file):
-                os.remove(output_file)
+            for file in [temp_sequence_file, output_file]:
+                try:
+                    Path(file).unlink(missing_ok=True)
+                except Exception as e:
+                    print(f"Warning: Could not remove temporary file {file}: {e}")
 
     def _check_recombination(self, te: TEAnnotation) -> bool:
         """Check for recombination"""
