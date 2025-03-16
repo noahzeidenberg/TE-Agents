@@ -47,14 +47,16 @@ class TEAnnotation:
     nearby_features: Optional[Dict[str, str]] = None
 
 class YeastTEAnalyzer:
-    def __init__(self, genome_file: str, transcriptome_file: str):
-        """Initialize the analyzer with genome and transcriptome files"""
+    def __init__(self, genome_file: str, gff_file: str):
+        """Initialize the analyzer with genome and GFF annotation files"""
         self.genome_file = genome_file
-        self.transcriptome_file = transcriptome_file
+        self.gff_file = gff_file
         self.genome_sequences = {}
         self.te_annotations = []
+        self.gene_annotations = {}  # Store gene locations from GFF
         self.te_consensus = self._load_te_consensus()
         self._setup_blast_db()
+        self._load_gff_annotations()
         
     def _setup_blast_db(self):
         """Set up BLAST database for the genome"""
@@ -85,6 +87,34 @@ class YeastTEAnalyzer:
         with gzip.open(self.genome_file, 'rt') as f:
             for record in SeqIO.parse(f, 'fasta'):
                 self.genome_sequences[record.id] = str(record.seq)
+
+    def _load_gff_annotations(self):
+        """Load gene annotations from GFF file"""
+        print("Loading GFF annotations...")
+        with open(self.gff_file, 'r') as f:
+            for line in f:
+                if line.startswith('#'):
+                    continue
+                fields = line.strip().split('\t')
+                if len(fields) < 9:
+                    continue
+                if fields[2] in ['gene', 'tRNA_gene']:
+                    chromosome = fields[0]
+                    start = int(fields[3])
+                    end = int(fields[4])
+                    strand = fields[6]
+                    attributes = dict(item.split('=') for item in fields[8].split(';') if '=' in item)
+                    gene_id = attributes.get('ID', 'unknown')
+                    
+                    if chromosome not in self.gene_annotations:
+                        self.gene_annotations[chromosome] = []
+                    self.gene_annotations[chromosome].append({
+                        'id': gene_id,
+                        'start': start,
+                        'end': end,
+                        'strand': strand,
+                        'type': fields[2]
+                    })
 
     def _identify_te_locations(self):
         """Identify TE locations using BLAST"""
@@ -263,14 +293,27 @@ class YeastTEAnalyzer:
         return False
 
     def _analyze_nearby_features(self, te: TEAnnotation):
-        """Analyze genomic features near the TE"""
+        """Analyze genomic features near the TE using GFF annotations"""
         window = 1000  # 1kb window
-        chromosome = self.genome_sequences[te.chromosome]
-        upstream = chromosome[max(0, te.start - window):te.start]
-        downstream = chromosome[te.end:min(len(chromosome), te.end + window)]
-        
         features = {}
-        # Analyze upstream/downstream regions
+        
+        if te.chromosome in self.gene_annotations:
+            nearby_genes = []
+            for gene in self.gene_annotations[te.chromosome]:
+                # Check if gene is within window of TE
+                if (abs(gene['start'] - te.end) < window or 
+                    abs(gene['end'] - te.start) < window):
+                    nearby_genes.append({
+                        'id': gene['id'],
+                        'type': gene['type'],
+                        'distance': min(
+                            abs(gene['start'] - te.end),
+                            abs(gene['end'] - te.start)
+                        )
+                    })
+            if nearby_genes:
+                features['nearby_genes'] = nearby_genes
+        
         te.nearby_features = features
 
     def analyze(self):
@@ -302,12 +345,12 @@ class YeastTEAnalyzer:
 def main():
     parser = argparse.ArgumentParser(description='Analyze TEs in S. cerevisiae genome')
     parser.add_argument('--genome', required=True, help='Path to genome FASTA file')
-    parser.add_argument('--transcriptome', required=True, help='Path to transcriptome FASTA file')
+    parser.add_argument('--gff', required=True, help='Path to GFF annotation file')
     parser.add_argument('--output', required=True, help='Output file prefix')
     
     args = parser.parse_args()
     
-    analyzer = YeastTEAnalyzer(args.genome, args.transcriptome)
+    analyzer = YeastTEAnalyzer(args.genome, args.gff)
     analyzer.analyze()
     
     # Generate and save report
