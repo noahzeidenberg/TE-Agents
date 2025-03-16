@@ -51,17 +51,20 @@ class YeastTEAnalyzer:
         """Initialize the analyzer with genome and GFF annotation files"""
         self.genome_file = genome_file
         self.gff_file = gff_file
+        self.blast_db = "temp_genome_db"
         self.genome_sequences = {}
         self.te_annotations = []
+        self.te_consensus = {}
+        self.gff_features = []  # Store GFF features
+        self.nearby_features = {}  # Initialize nearby_features as empty dict
         self.gene_annotations = {}  # Store gene locations from GFF
-        self.te_consensus = self._load_te_consensus()
+        
         self._setup_blast_db()
         self._load_gff_annotations()
         
     def _setup_blast_db(self):
         """Set up BLAST database for the genome"""
         print("Setting up BLAST database...")
-        self.blast_db = "temp_genome_db"
         subprocess.run([
             "makeblastdb",
             "-in", self.genome_file,
@@ -203,37 +206,79 @@ class YeastTEAnalyzer:
             
             os.remove(output_file)
 
-    def _analyze_te_status(self, te: TEAnnotation):
-        """Determine if a TE is active or inactive and why"""
-        sequence = self.genome_sequences[te.chromosome][te.start:te.end]
+    def _analyze_nearby_features(self, te: TEAnnotation) -> List[str]:
+        """Analyze genomic features near the TE"""
+        nearby = []
+        window = 1000  # Look 1kb upstream and downstream
         
-        # Check for truncation
-        if len(sequence) < 0.9 * len(self.te_consensus[te.family]):
-            te.status = TEStatus.INACTIVE_TRUNCATED
-            te.inactivation_reason = f"Truncated: {len(sequence)}bp vs consensus {len(self.te_consensus[te.family])}bp"
-            return
+        for feature in self.gff_features:
+            if feature['chromosome'] != te.chromosome:
+                continue
+                
+            # Check if feature is within window of TE
+            if (abs(feature['start'] - te.start) <= window or 
+                abs(feature['end'] - te.end) <= window):
+                nearby.append(feature)
+        
+        # Store nearby features for this TE
+        self.nearby_features[te] = nearby
+        return nearby
 
-        # Check for mutations in key regions
-        mutations = self._find_mutations(sequence, self.te_consensus[te.family])
-        if self._has_critical_mutations(mutations):
+    def _check_silencing_marks(self, te: TEAnnotation) -> bool:
+        """Check for silencing marks near the TE"""
+        if te not in self.nearby_features:
+            self._analyze_nearby_features(te)
+            
+        nearby = self.nearby_features.get(te, [])
+        
+        # Check for tRNA genes or other silencing-associated features
+        for feature in nearby:
+            if 'tRNA' in feature.get('type', ''):
+                return True
+            # Add other silencing mark checks here
+        
+        return False
+
+    def _analyze_te_status(self, te: TEAnnotation):
+        """Analyze the status of a TE"""
+        # First analyze nearby features
+        self._analyze_nearby_features(te)
+        
+        # Then check various status conditions
+        if self._check_truncation(te):
+            te.status = TEStatus.INACTIVE_TRUNCATED
+        elif self._check_mutations(te):
             te.status = TEStatus.INACTIVE_MUTATED
+        elif self._check_silencing_marks(te):
+            te.status = TEStatus.INACTIVE_SILENCED
+        else:
+            te.status = TEStatus.ACTIVE
+
+    def _check_truncation(self, te: TEAnnotation) -> bool:
+        """Check for truncation"""
+        sequence = self.genome_sequences[te.chromosome][te.start:te.end]
+        if len(sequence) < 0.9 * len(self.te_consensus[te.family]):
+            te.inactivation_reason = f"Truncated: {len(sequence)}bp vs consensus {len(self.te_consensus[te.family])}bp"
+            return True
+        return False
+
+    def _check_mutations(self, te: TEAnnotation) -> bool:
+        """Check for mutations"""
+        sequence = self.genome_sequences[te.chromosome][te.start:te.end]
+        consensus = self.te_consensus[te.family]
+        mutations = self._find_mutations(sequence, consensus)
+        if self._has_critical_mutations(mutations):
             te.inactivation_reason = "Critical mutations in functional regions"
             te.mutations = mutations
-            return
+            return True
+        return False
 
-        # Check for silencing marks
-        if self._check_silencing_marks(te):
-            te.status = TEStatus.INACTIVE_SILENCED
-            te.inactivation_reason = "Epigenetically silenced"
-            return
-
-        # Check for recombination
-        if self._check_recombination(te):
-            te.status = TEStatus.INACTIVE_RECOMBINED
+    def _check_recombination(self, te: TEAnnotation) -> bool:
+        """Check for recombination"""
+        if len(te.sequence) < 300:  # Typical LTR length
             te.inactivation_reason = "Inactivated by recombination"
-            return
-
-        te.status = TEStatus.ACTIVE
+            return True
+        return False
 
     def _find_mutations(self, sequence: str, consensus: str) -> List[str]:
         """Find mutations compared to consensus sequence"""
@@ -303,6 +348,13 @@ class YeastTEAnalyzer:
                             return True
         return False
 
+    def analyze(self):
+        """Main analysis function"""
+        self._load_genome()
+        self._identify_te_locations()
+        
+        for te in self.te_annotations:
+            self._analyze_te_status(te)
     def _check_silencing_marks(self, te: TEAnnotation) -> bool:
         """Check for epigenetic silencing marks"""
         # Look for known silencing patterns in flanking regions
