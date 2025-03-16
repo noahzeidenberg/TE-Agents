@@ -2,7 +2,7 @@ import os
 import argparse
 import gzip
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, auto
 from typing import List, Dict, Optional, Set, Tuple
 import pandas as pd
 from Bio import SeqIO
@@ -17,6 +17,7 @@ import tempfile
 from Bio import Entrez
 import shutil
 from Bio.Blast.Applications import NcbimakeblastdbCommandline
+import json
 
 Entrez.email = "nzeidenb@uoguelph.ca"
 
@@ -36,6 +37,12 @@ class TEStatus(Enum):
     SILENCED = "silenced"
     UNKNOWN = "unknown"
 
+class InactivationReason(Enum):
+    TRUNCATION = "Truncation"
+    MUTATION = "Mutation"
+    SILENCING = "Silencing"
+    NONE = "None"
+
 @dataclass
 class TEAnnotation:
     family: TEFamily
@@ -44,7 +51,8 @@ class TEAnnotation:
     end: int
     strand: str
     sequence: str
-    _status: TEStatus = TEStatus.UNKNOWN  # Private status field
+    _status: TEStatus = TEStatus.UNKNOWN
+    _inactivation_reason: InactivationReason = InactivationReason.NONE
     
     def __hash__(self):
         # Hash only the immutable identifying attributes
@@ -59,6 +67,14 @@ class TEAnnotation:
     def status(self, value: TEStatus):
         """Set the TE status"""
         object.__setattr__(self, '_status', value)
+    
+    @property
+    def inactivation_reason(self) -> InactivationReason:
+        return self._inactivation_reason
+    
+    @inactivation_reason.setter
+    def inactivation_reason(self, value: InactivationReason):
+        object.__setattr__(self, '_inactivation_reason', value)
     
     def get_id(self) -> str:
         """Generate a unique identifier for this TE"""
@@ -277,21 +293,25 @@ class YeastTEAnalyzer:
         # First analyze nearby features
         self._analyze_nearby_features(te)
         
-        # Then check various status conditions
+        # Check various status conditions
         if self._check_truncation(te):
             te.status = TEStatus.TRUNCATED
+            te.inactivation_reason = InactivationReason.TRUNCATION
         elif self._check_mutations(te):
             te.status = TEStatus.MUTATED
+            te.inactivation_reason = InactivationReason.MUTATION
         elif self._check_silencing_marks(te):
             te.status = TEStatus.SILENCED
+            te.inactivation_reason = InactivationReason.SILENCING
         else:
             te.status = TEStatus.ACTIVE
+            te.inactivation_reason = InactivationReason.NONE
 
     def _check_truncation(self, te: TEAnnotation) -> bool:
         """Check for truncation"""
         sequence = self.genome_sequences[te.chromosome][te.start:te.end]
         if len(sequence) < 0.9 * len(self.te_consensus[te.family]):
-            te.inactivation_reason = f"Truncated: {len(sequence)}bp vs consensus {len(self.te_consensus[te.family])}bp"
+            te.inactivation_reason = InactivationReason.TRUNCATION
             return True
         return False
 
@@ -301,7 +321,7 @@ class YeastTEAnalyzer:
         consensus = self.te_consensus[te.family]
         mutations = self._find_mutations(sequence, consensus)
         if self._has_critical_mutations(mutations):
-            te.inactivation_reason = "Critical mutations in functional regions"
+            te.inactivation_reason = InactivationReason.MUTATION
             te.mutations = mutations
             return True
         return False
@@ -309,7 +329,7 @@ class YeastTEAnalyzer:
     def _check_recombination(self, te: TEAnnotation) -> bool:
         """Check for recombination"""
         if len(te.sequence) < 300:  # Typical LTR length
-            te.inactivation_reason = "Inactivated by recombination"
+            te.inactivation_reason = InactivationReason.SILENCING
             return True
         return False
 
@@ -432,21 +452,40 @@ class YeastTEAnalyzer:
         self._cleanup()
 
     def generate_report(self) -> pd.DataFrame:
-        """Generate a detailed report of findings"""
-        data = []
+        """Generate a report of TE analysis results"""
+        report_data = []
         for te in self.te_annotations:
-            data.append({
+            report_data.append({
                 'Family': te.family.value,
                 'Chromosome': te.chromosome,
                 'Start': te.start,
                 'End': te.end,
                 'Strand': te.strand,
                 'Status': te.status.value,
-                'Inactivation_Reason': te.inactivation_reason,
-                'Length': te.end - te.start,
-                'Nearby_Features': str(te.nearby_features)
+                'Inactivation_Reason': te.inactivation_reason.value,
+                'Length': len(te.sequence),
+                'Nearby_Features': len(self.nearby_features.get(te.get_id(), []))
             })
-        return pd.DataFrame(data)
+        
+        return pd.DataFrame(report_data)
+
+    def save_results(self, output_prefix: str):
+        """Save analysis results to files"""
+        # Generate and save report
+        report = self.generate_report()
+        report.to_csv(f"{output_prefix}_report.csv", index=False)
+        
+        # Save summary statistics
+        summary = {
+            'total_tes': len(self.te_annotations),
+            'active_tes': len([te for te in self.te_annotations if te.status == TEStatus.ACTIVE]),
+            'truncated_tes': len([te for te in self.te_annotations if te.inactivation_reason == InactivationReason.TRUNCATION]),
+            'mutated_tes': len([te for te in self.te_annotations if te.inactivation_reason == InactivationReason.MUTATION]),
+            'silenced_tes': len([te for te in self.te_annotations if te.inactivation_reason == InactivationReason.SILENCING])
+        }
+        
+        with open(f"{output_prefix}_summary.json", 'w') as f:
+            json.dump(summary, f, indent=2)
 
 def main():
     parser = argparse.ArgumentParser(description='Analyze TEs in S. cerevisiae genome')
@@ -460,13 +499,12 @@ def main():
     analyzer.analyze()
     
     # Generate and save report
-    report = analyzer.generate_report()
-    report.to_csv(f"{args.output}_te_analysis.tsv", sep='\t', index=False)
+    analyzer.save_results(args.output)
     
     # Print summary statistics
     print("\nAnalysis Summary:")
     print(f"Total TEs found: {len(analyzer.te_annotations)}")
-    status_counts = report['Status'].value_counts()
+    status_counts = analyzer.generate_report()['Status'].value_counts()
     print("\nTE Status Distribution:")
     for status, count in status_counts.items():
         print(f"{status}: {count}")
