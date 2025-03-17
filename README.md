@@ -1,6 +1,6 @@
-sb# Yeast Transposable Element Analyzer
+# Yeast Transposable Element Analyzer
 
-This tool analyzes transposable elements (TEs) in the Saccharomyces cerevisiae genome, identifying their locations, families, and activity status.
+This tool is undergoing development.
 
 ## Features
 
