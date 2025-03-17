@@ -108,7 +108,7 @@ class YeastTEAnalyzer:
         """Initialize the analyzer with genome and GFF annotation files"""
         self.genome_file = genome_file
         self.gff_file = gff_file
-        self.output_dir = "repeatmasker_output"
+        self.output_dir = "edta_output"
         self.te_annotations = []
         self.gff_features = []
         self.nearby_features = {}
@@ -116,222 +116,111 @@ class YeastTEAnalyzer:
         # Create output directory
         Path(self.output_dir).mkdir(exist_ok=True)
         
-        # Initialize consensus sequences first
-        self._load_te_consensus()
+        # Prepare curated library
+        self._prepare_curated_library()
+
+    def _prepare_curated_library(self):
+        """Prepare curated TE library from consensus sequences"""
+        print("Preparing curated TE library...")
         
-    def _setup_blast_db(self):
-        """Set up BLAST database for the genome"""
-        print("Setting up BLAST database...")
-        subprocess.run([
-            "makeblastdb",
-            "-in", self.genome_file,
-            "-dbtype", "nucl",
-            "-out", self.blast_db
-        ])
-
-    def _load_te_consensus(self):
-        """Load consensus sequences from local files"""
-        print("Loading TE consensus sequences from local files...")
-        
-        # Define local file paths for each TE family
-        te_files = {
-            TEFamily.TY1: "consensus/S288C_YALWdelta1_YALWdelta1_genomic.fsa",
-            TEFamily.TY2: "consensus/S288C_YGRWTy2-2_genomic.fsa",
-            TEFamily.TY3: "consensus/S288C_YGRWTy3-1_genomic.fsa",
-            TEFamily.TY4: "consensus/S288C_YHLWTy4-1_genomic.fsa",
-            TEFamily.TY5: "consensus/S288C_YCLWTy5-1_genomic.fsa"
-        }
-        
-        for family, file_path in te_files.items():
-            try:
-                # Verify file exists
-                if not os.path.exists(file_path):
-                    print(f"Warning: Consensus file not found for {family.value}: {file_path}")
-                    continue
-                    
-                # Read and validate the consensus sequence
-                with open(file_path) as f:
-                    sequence_data = f.read()
-                    
-                # Store the file path directly since it's already in FASTA format
-                self.te_consensus[family] = file_path
-                
-                # Debug: Print sequence info
-                seq = ''.join(line.strip() for line in sequence_data.split('\n')[1:])
-                print(f"Loaded consensus for {family.value}")
-                print(f"Sequence length: {len(seq)}")
-                print(f"First 50 bp: {seq[:50]}")
-                
-            except Exception as e:
-                print(f"Error loading consensus for {family.value}: {e}")
-                continue
-
-    def _load_genome(self):
-        """Load the genome sequences"""
-        print("Loading genome sequences...")
-        with open(self.genome_file, 'rt') as f:
-            for record in SeqIO.parse(f, 'fasta'):
-                # Print the first few characters of each header to help debug
-                print(f"Found sequence with ID: {record.id}")
-                self.genome_sequences[record.id] = str(record.seq)
-
-    def _load_gff_annotations(self):
-        """Load gene annotations from GFF file"""
-        print("Loading GFF annotations...")
-        with open(self.gff_file, 'r') as f:
-            for line in f:
-                if line.startswith('#'):
-                    continue
-                fields = line.strip().split('\t')
-                if len(fields) < 9:
-                    continue
-                if fields[2] in ['gene', 'tRNA_gene']:
-                    chromosome = fields[0]
-                    start = int(fields[3])
-                    end = int(fields[4])
-                    strand = fields[6]
-                    attributes = dict(item.split('=') for item in fields[8].split(';') if '=' in item)
-                    gene_id = attributes.get('ID', 'unknown')
-                    
-                    if chromosome not in self.gene_annotations:
-                        self.gene_annotations[chromosome] = []
-                    self.gene_annotations[chromosome].append({
-                        'id': gene_id,
-                        'start': start,
-                        'end': end,
-                        'strand': strand,
-                        'type': fields[2]
-                    })
-
-    def _generate_spaced_seeds(self) -> List[SpacedSeed]:
-        """Generate optimized spaced seeds for TE detection"""
-        # These patterns are optimized for TE detection based on literature
-        # Multiple seeds increase sensitivity
-        seed_patterns = [
-            '1111100001111',  # Optimized for ~70-80% similarity
-            '11011011000011',  # Good for finding TEs with internal deletions
-            '111010010100111'  # Effective for finding degraded LTRs
-        ]
-        return [SpacedSeed(pattern) for pattern in seed_patterns]
-
-    def _generate_seed_hits(self, sequence: str, seed: SpacedSeed) -> Set[str]:
-        """Generate all seed hits from a sequence using a spaced seed pattern"""
-        hits = set()
-        for i in range(len(sequence) - seed.length + 1):
-            # Extract characters at match positions only
-            hit = ''.join(sequence[i + pos] for pos in seed.match_positions)
-            hits.add(hit)
-        return hits
-
-    def _run_repeatmasker(self):
-        """Run RepeatMasker on the genome"""
-        print("Running RepeatMasker analysis...")
-        
-        # Create a custom library from our consensus sequences
-        library_file = "consensus/yeast_te_library.fa"
+        library_file = "consensus/yeast_te_library.fasta"
         with open(library_file, 'w') as lib:
             for te_file in Path("consensus").glob("S288C_*.fsa"):
                 with open(te_file) as f:
                     lib.write(f.read() + "\n")
         
-        # Run RepeatMasker with custom settings
+        self.curated_library = library_file
+
+    def _run_edta(self):
+        """Run EDTA analysis using apptainer"""
+        print("Running EDTA analysis...")
+        
+        # EDTA command with all necessary parameters
         cmd = [
-            "RepeatMasker",
-            "-lib", library_file,          # Use custom library
-            "-species", "Saccharomyces",   # Specify species
-            "-pa", "4",                    # Use 4 parallel processes
-            "-gff",                        # Output GFF format
-            "-nolow",                      # Don't mask low complexity
-            "-no_is",                      # Don't mask bacterial insertion elements
-            "-dir", self.output_dir,       # Output directory
-            self.genome_file               # Input genome
+            "apptainer", "exec",
+            "--bind", f"{os.getcwd()}:/workspace",
+            "docker://oushujun/edta",  # Use the official EDTA container
+            "EDTA.pl",
+            "--genome", self.genome_file,
+            "--species", "others",  # Since yeast isn't a built-in species
+            "--step", "all",        # Run all analysis steps
+            "--cds", self.gff_file, # Provide gene annotations
+            "--curatedlib", self.curated_library,
+            "--threads", "4",
+            "--force", "1",         # Overwrite existing results
+            "--anno", "1"           # Enable annotation
         ]
         
         print("Running command:", " ".join(cmd))
-        subprocess.run(cmd, check=True)
-        
-        # Parse RepeatMasker output
-        self._parse_repeatmasker_output()
+        try:
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"EDTA analysis failed: {e}")
+            raise
 
-    def _parse_repeatmasker_output(self):
-        """Parse RepeatMasker output files"""
-        # Parse the .out file which contains detailed annotations
-        out_file = Path(self.output_dir) / f"{Path(self.genome_file).name}.out"
+    def _parse_edta_output(self):
+        """Parse EDTA output files"""
+        # Parse the main annotation file
+        anno_file = f"{self.genome_file}.mod.EDTA.TEanno.gff3"
         
-        print(f"Parsing RepeatMasker output: {out_file}")
+        print(f"Parsing EDTA annotations: {anno_file}")
         
-        with open(out_file) as f:
-            # Skip header lines
-            for _ in range(3):
-                next(f)
-            
+        with open(anno_file) as f:
             for line in f:
-                fields = line.strip().split()
-                if len(fields) >= 15:
+                if line.startswith('#'):
+                    continue
+                    
+                fields = line.strip().split('\t')
+                if len(fields) < 9:
+                    continue
+                
+                if fields[2] == "transposable_element":
+                    attributes = dict(item.split('=') for item in fields[8].split(';') if '=' in item)
+                    
+                    # Extract TE family and status information
+                    te_family = self._get_te_family(attributes.get('Name', ''))
+                    if te_family is None:
+                        continue
+                    
                     te = TEAnnotation(
-                        family=self._get_te_family(fields[10]),
-                        chromosome=fields[4],
-                        start=int(fields[5]),
-                        end=int(fields[6]),
-                        strand=fields[8],
-                        sequence="",  # We'll fill this in later
-                        _status=self._determine_status(fields),
-                        _inactivation_reason=self._determine_inactivation(fields)
+                        family=te_family,
+                        chromosome=fields[0],
+                        start=int(fields[3]),
+                        end=int(fields[4]),
+                        strand=fields[6],
+                        sequence="",  # We'll fill this later if needed
+                        _status=self._determine_status(attributes),
+                        _inactivation_reason=self._determine_inactivation(attributes)
                     )
                     self.te_annotations.append(te)
 
-    def _get_te_family(self, name: str) -> TEFamily:
-        """Map RepeatMasker names to TE families"""
-        name = name.upper()
-        if "TY1" in name:
-            return TEFamily.TY1
-        elif "TY2" in name:
-            return TEFamily.TY2
-        elif "TY3" in name:
-            return TEFamily.TY3
-        elif "TY4" in name:
-            return TEFamily.TY4
-        elif "TY5" in name:
-            return TEFamily.TY5
-        else:
-            return None
-
-    def _determine_status(self, fields) -> TEStatus:
-        """Determine TE status from RepeatMasker output"""
-        div_pct = float(fields[1])  # Divergence percentage
-        del_pct = float(fields[2])  # Deletion percentage
-        ins_pct = float(fields[3])  # Insertion percentage
+    def _determine_status(self, attributes: Dict[str, str]) -> TEStatus:
+        """Determine TE status from EDTA attributes"""
+        # EDTA provides detailed classification
+        classification = attributes.get('Classification', '').lower()
+        identity = float(attributes.get('Identity', '0'))
         
-        if div_pct < 5 and del_pct < 5 and ins_pct < 5:
+        if 'intact' in classification and identity >= 90:
             return TEStatus.ACTIVE
-        elif del_pct > 20:
+        elif 'truncated' in classification:
             return TEStatus.TRUNCATED
-        elif div_pct > 20:
+        elif 'degraded' in classification or identity < 80:
             return TEStatus.MUTATED
         else:
             return TEStatus.UNKNOWN
 
-    def _determine_inactivation(self, fields) -> InactivationReason:
-        """Determine inactivation reason from RepeatMasker output"""
-        div_pct = float(fields[1])
-        del_pct = float(fields[2])
-        
-        if del_pct > 20:
-            return InactivationReason.TRUNCATION
-        elif div_pct > 20:
-            return InactivationReason.MUTATION
-        else:
-            return InactivationReason.NONE
-
     def analyze(self):
         """Run the complete TE analysis"""
-        # Run RepeatMasker
-        self._run_repeatmasker()
+        # Run EDTA
+        self._run_edta()
+        
+        # Parse EDTA output
+        self._parse_edta_output()
         
         # Load GFF annotations for feature analysis
         self._load_gff_annotations()
         
-        # Analyze nearby features and silencing
+        # Check for silencing marks
         for te in self.te_annotations:
             if self._check_silencing_marks(te):
                 te.status = TEStatus.SILENCED
@@ -428,6 +317,68 @@ class YeastTEAnalyzer:
         
         with open(f"{output_prefix}_summary.json", 'w') as f:
             json.dump(summary, f, indent=2)
+
+    def _get_te_family(self, name: str) -> TEFamily:
+        """Map EDTA names to TE families"""
+        name = name.upper()
+        if "TY1" in name:
+            return TEFamily.TY1
+        elif "TY2" in name:
+            return TEFamily.TY2
+        elif "TY3" in name:
+            return TEFamily.TY3
+        elif "TY4" in name:
+            return TEFamily.TY4
+        elif "TY5" in name:
+            return TEFamily.TY5
+        else:
+            return None
+
+    def _determine_inactivation(self, attributes: Dict[str, str]) -> InactivationReason:
+        """Determine inactivation reason from EDTA attributes"""
+        # EDTA provides detailed classification
+        classification = attributes.get('Classification', '').lower()
+        
+        if 'truncated' in classification:
+            return InactivationReason.TRUNCATION
+        elif 'degraded' in classification:
+            return InactivationReason.MUTATION
+        else:
+            return InactivationReason.NONE
+
+    def _load_gff_annotations(self):
+        """Load gene annotations from GFF file"""
+        print("Loading GFF annotations...")
+        with open(self.gff_file, 'r') as f:
+            for line in f:
+                if line.startswith('#'):
+                    continue
+                fields = line.strip().split('\t')
+                if len(fields) < 9:
+                    continue
+                if fields[2] in ['gene', 'tRNA_gene']:
+                    chromosome = fields[0]
+                    start = int(fields[3])
+                    end = int(fields[4])
+                    strand = fields[6]
+                    attributes = dict(item.split('=') for item in fields[8].split(';') if '=' in item)
+                    gene_id = attributes.get('ID', 'unknown')
+                    
+                    if chromosome not in self.gene_annotations:
+                        self.gene_annotations[chromosome] = []
+                    self.gene_annotations[chromosome].append({
+                        'id': gene_id,
+                        'start': start,
+                        'end': end,
+                        'strand': strand,
+                        'type': fields[2]
+                    })
+
+    def _check_silencing_marks(self, te: TEAnnotation) -> bool:
+        """Check if a TE is silenced by nearby features"""
+        # Implementation of the method to check for silencing marks
+        # This is a placeholder and should be implemented based on your specific requirements
+        return False  # Placeholder return, actual implementation needed
 
 def main():
     parser = argparse.ArgumentParser(description='Analyze TEs in yeast genome')
