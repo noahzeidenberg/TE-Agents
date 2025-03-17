@@ -40,9 +40,8 @@ python download_consensus.py
 
 ## Usage
 
-1. Download the S. cerevisiae reference genome and transcriptome from NCBI:
+1. Download the S. cerevisiae reference genome from NCBI:
    - Genome: GCF_000146045.2_R64_genomic.fna.gz
-   - Transcriptome: GCF_000146045.2_R64_rna.fna.gz
 
 2. Run the analysis:
 ```bash
