@@ -1,3 +1,6 @@
 reference_code/
 TEs as Ecological Agents full proposal (excluding budget) .txt
 run_simulation.slurm
+kegg_integration.py
+methods.md
+visualization.py
