@@ -135,20 +135,41 @@ class YeastTEAnalyzer:
         """Run EDTA analysis using apptainer"""
         print("Running EDTA analysis...")
         
+        # Get absolute paths
+        abs_genome = os.path.abspath(self.genome_file)
+        abs_gff = os.path.abspath(self.gff_file)
+        abs_lib = os.path.abspath(self.curated_library)
+        abs_output = os.path.abspath(self.output_dir)
+        
+        # Create a bind string for all necessary directories
+        bind_paths = [
+            f"{os.path.dirname(abs_genome)}:/input",
+            f"{os.path.dirname(abs_gff)}:/annotation",
+            f"{os.path.dirname(abs_lib)}:/lib",
+            f"{abs_output}:/output"
+        ]
+        bind_string = ",".join(bind_paths)
+        
+        # Adjust file paths for container
+        container_genome = f"/input/{os.path.basename(self.genome_file)}"
+        container_gff = f"/annotation/{os.path.basename(self.gff_file)}"
+        container_lib = f"/lib/{os.path.basename(self.curated_library)}"
+        
         # EDTA command with all necessary parameters
         cmd = [
             "apptainer", "exec",
-            "--bind", f"{os.getcwd()}:/workspace",
-            "docker://oushujun/edta",  # Use the official EDTA container
+            "--bind", bind_string,
+            "docker://oushujun/edta:2.0.0",  # Use specific version
             "EDTA.pl",
-            "--genome", self.genome_file,
-            "--species", "others",  # Since yeast isn't a built-in species
-            "--step", "all",        # Run all analysis steps
-            "--cds", self.gff_file, # Provide gene annotations
-            "--curatedlib", self.curated_library,
+            "--genome", container_genome,
+            "--species", "others",
+            "--step", "all",
+            "--cds", container_gff,
+            "--curatedlib", container_lib,
             "--threads", "4",
-            "--force", "1",         # Overwrite existing results
-            "--anno", "1"           # Enable annotation
+            "--force", "1",
+            "--anno", "1",
+            "--output", "/output"
         ]
         
         print("Running command:", " ".join(cmd))
@@ -156,6 +177,9 @@ class YeastTEAnalyzer:
             subprocess.run(cmd, check=True)
         except subprocess.CalledProcessError as e:
             print(f"EDTA analysis failed: {e}")
+            # Print the actual error message if available
+            if hasattr(e, 'output'):
+                print("Error output:", e.output)
             raise
 
     def _parse_edta_output(self):
@@ -258,16 +282,16 @@ class YeastTEAnalyzer:
 
     def _cleanup(self):
         """Clean up temporary files"""
-        # Remove BLAST database files
-        for ext in [".nhr", ".nin", ".nsq"]:
-            try:
-                os.remove(self.blast_db + ext)
-            except OSError:
-                pass
-        
         # Remove temporary consensus files
         try:
             shutil.rmtree("temp_consensus")
+        except OSError:
+            pass
+        
+        # Clean up EDTA temporary files
+        try:
+            for temp_file in Path(self.output_dir).glob("*.temp*"):
+                temp_file.unlink()
         except OSError:
             pass
 

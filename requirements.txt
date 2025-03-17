@@ -1,4 +1,5 @@
 biopython # DRAC doesn't like specifying versions
+Bio # "" 
 pandas # "" 
 requests # ""
 numpy # ""
