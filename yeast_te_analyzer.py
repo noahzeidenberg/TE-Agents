@@ -7,7 +7,6 @@ from typing import List, Dict, Optional, Set, Tuple
 import pandas as pd
 from Bio import SeqIO
 from Bio.Seq import Seq
-from Bio.Blast.Applications import NcbiblastnCommandline
 from Bio.Blast import NCBIXML
 import requests
 from collections import defaultdict
@@ -16,7 +15,6 @@ import subprocess
 import tempfile
 from Bio import Entrez
 import shutil
-from Bio.Blast.Applications import NcbimakeblastdbCommandline
 import json
 from pathlib import Path
 from itertools import product
@@ -150,6 +148,18 @@ class YeastTEAnalyzer:
         ]
         bind_string = ",".join(bind_paths)
         
+        # First, pull the container
+        pull_cmd = [
+            "apptainer",
+            "pull",
+            "--force",
+            "edta.sif",
+            "docker://oushujun/edta:latest"
+        ]
+        
+        print("Pulling EDTA container...")
+        subprocess.run(pull_cmd, check=True)
+        
         # Adjust file paths for container
         container_genome = f"/input/{os.path.basename(self.genome_file)}"
         container_gff = f"/annotation/{os.path.basename(self.gff_file)}"
@@ -159,7 +169,7 @@ class YeastTEAnalyzer:
         cmd = [
             "apptainer", "exec",
             "--bind", bind_string,
-            "docker://oushujun/edta:2.0.0",  # Use specific version
+            "edta.sif",  # Use the local SIF file instead of direct Docker reference
             "EDTA.pl",
             "--genome", container_genome,
             "--species", "others",
@@ -177,7 +187,6 @@ class YeastTEAnalyzer:
             subprocess.run(cmd, check=True)
         except subprocess.CalledProcessError as e:
             print(f"EDTA analysis failed: {e}")
-            # Print the actual error message if available
             if hasattr(e, 'output'):
                 print("Error output:", e.output)
             raise
