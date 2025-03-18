@@ -130,7 +130,7 @@ class YeastTEAnalyzer:
         self.curated_library = library_file
 
     def _run_edta(self):
-        """Run EDTA analysis using apptainer"""
+        """Run EDTA analysis directly (without container)"""
         print("Running EDTA analysis...")
         
         # Get absolute paths
@@ -139,47 +139,18 @@ class YeastTEAnalyzer:
         abs_lib = os.path.abspath(self.curated_library)
         abs_output = os.path.abspath(self.output_dir)
         
-        # Create a bind string for all necessary directories
-        bind_paths = [
-            f"{os.path.dirname(abs_genome)}:/input",
-            f"{os.path.dirname(abs_gff)}:/annotation",
-            f"{os.path.dirname(abs_lib)}:/lib",
-            f"{abs_output}:/output"
-        ]
-        bind_string = ",".join(bind_paths)
-        
-        # First, pull the container
-        pull_cmd = [
-            "apptainer",
-            "pull",
-            "--force",
-            "edta.sif",
-            "docker://oushujun/edta:latest"
-        ]
-        
-        print("Pulling EDTA container...")
-        subprocess.run(pull_cmd, check=True)
-        
-        # Adjust file paths for container
-        container_genome = f"/input/{os.path.basename(self.genome_file)}"
-        container_gff = f"/annotation/{os.path.basename(self.gff_file)}"
-        container_lib = f"/lib/{os.path.basename(self.curated_library)}"
-        
         # EDTA command with all necessary parameters
         cmd = [
-            "apptainer", "exec",
-            "--bind", bind_string,
-            "edta.sif",  # Use the local SIF file instead of direct Docker reference
-            "EDTA.pl",
-            "--genome", container_genome,
+            "perl", "EDTA/EDTA.pl",  # Assuming EDTA is cloned in the current directory
+            "--genome", abs_genome,
             "--species", "others",
             "--step", "all",
-            "--cds", container_gff,
-            "--curatedlib", container_lib,
+            "--cds", abs_gff,
+            "--curatedlib", abs_lib,
             "--threads", "4",
             "--force", "1",
             "--anno", "1",
-            "--output", "/output"
+            "--outdir", abs_output
         ]
         
         print("Running command:", " ".join(cmd))
