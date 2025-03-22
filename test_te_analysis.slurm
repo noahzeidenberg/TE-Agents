@@ -37,7 +37,6 @@ fi
 # Create results directory if it doesn't exist
 mkdir -p /scratch/nzeidenb/TE-Agents/te_test_results
 
-# Since RepeatMasker isn't available as a module, we'll use a simpler approach for testing
 # Just count sequences and basic stats for now
 echo "Basic sequence statistics:" > chr3_stats.txt
 grep -c ">" chr3.fasta >> chr3_stats.txt

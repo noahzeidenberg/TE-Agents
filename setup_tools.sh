@@ -97,11 +97,21 @@ if [ -d "util" ]; then
     chmod +x util/*
 fi
 
+# Install GenomeTools if not present
+if [ ! -d "genometools" ]; then
+    echo "Installing GenomeTools..."
+    git clone https://github.com/genometools/genometools.git
+    cd genometools
+    make threads=yes 64bit=yes
+    make install prefix=$TOOLS_DIR/genometools
+    cd $TOOLS_DIR
+fi
+
 # Create/update configuration file
 echo "Creating/updating tools configuration..."
 cat > $TOOLS_DIR/tools_config.sh << EOF
 # Tool paths
-export PATH="$TOOLS_DIR/RepeatMasker:$TOOLS_DIR/EDTA:$TOOLS_DIR/rmblast/bin:$PATH"
+export PATH="$TOOLS_DIR/genometools/bin:$TOOLS_DIR/RepeatMasker:$TOOLS_DIR/EDTA:$TOOLS_DIR/rmblast/bin:$PATH"
 export PERL5LIB="$TOOLS_DIR/perl5/lib/perl5:$PERL5LIB"
 # Python virtual environment
 source $TOOLS_DIR/venv/bin/activate

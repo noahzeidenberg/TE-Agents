@@ -147,7 +147,7 @@ class YeastTEAnalyzer:
         
         # Set up environment
         env = os.environ.copy()
-        env["PATH"] = f"{self.tools_dir}/RepeatMasker:{self.tools_dir}/EDTA:{self.tools_dir}/rmblast/bin:{env.get('PATH', '')}"
+        env["PATH"] = f"{self.tools_dir}/genometools/bin:{self.tools_dir}/RepeatMasker:{self.tools_dir}/EDTA:{self.tools_dir}/rmblast/bin:{env.get('PATH', '')}"
         env["PERL5LIB"] = f"{self.tools_dir}/perl5/lib/perl5:{env.get('PERL5LIB', '')}"
         
         # Change to output directory before running EDTA
