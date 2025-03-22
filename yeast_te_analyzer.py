@@ -144,12 +144,15 @@ class YeastTEAnalyzer:
         abs_genome = os.path.abspath(self.genome_file)
         abs_gff = os.path.abspath(self.gff_file)
         abs_lib = os.path.abspath(self.curated_library)
-        abs_output = os.path.abspath(self.output_dir)
         
         # Set up environment
         env = os.environ.copy()
         env["PATH"] = f"{self.tools_dir}/RepeatMasker:{self.tools_dir}/EDTA:{self.tools_dir}/rmblast/bin:{env.get('PATH', '')}"
         env["PERL5LIB"] = f"{self.tools_dir}/perl5/lib/perl5:{env.get('PERL5LIB', '')}"
+        
+        # Change to output directory before running EDTA
+        current_dir = os.getcwd()
+        os.chdir(self.output_dir)
         
         # EDTA command with corrected parameters
         cmd = [
@@ -162,24 +165,31 @@ class YeastTEAnalyzer:
             "--curatedlib", abs_lib,
             "--threads", str(os.environ.get("SLURM_CPUS_PER_TASK", "4")),
             "--force", "1",
-            "--anno", "1",
-            "-out", abs_output  # Changed from --outdir to -out
+            "--anno", "1"
         ]
         
         print("Running command:", " ".join(cmd))
         try:
-            subprocess.run(cmd, env=env, check=True, capture_output=True, text=True)
+            subprocess.run(cmd, env=env, check=True)
         except subprocess.CalledProcessError as e:
             print(f"EDTA analysis failed: {e}")
-            print("Error output:", e.stderr)  # Added stderr output for better error reporting
+            if hasattr(e, 'output'):
+                print("Error output:", e.output)
+            os.chdir(current_dir)  # Restore original directory
             raise
+        
+        os.chdir(current_dir)  # Restore original directory
 
     def _parse_edta_output(self):
         """Parse EDTA output files"""
-        # Parse the main annotation file
-        anno_file = f"{self.genome_file}.mod.EDTA.TEanno.gff3"
+        # Parse the main annotation file - note the path is relative to output directory
+        anno_file = os.path.join(self.output_dir, os.path.basename(self.genome_file) + ".mod.EDTA.TEanno.gff3")
         
         print(f"Parsing EDTA annotations: {anno_file}")
+        
+        if not os.path.exists(anno_file):
+            print(f"Warning: Annotation file not found at {anno_file}")
+            return
         
         with open(anno_file) as f:
             for line in f:
@@ -422,18 +432,18 @@ def main():
     
     try:
         analyzer = YeastTEAnalyzer(args.genome, args.gff)
-        analyzer.analyze()
-        
-        # Generate and save report
-        report = analyzer.generate_report()
+    analyzer.analyze()
+    
+    # Generate and save report
+    report = analyzer.generate_report()
         if not report.empty:
             report.to_csv(f"{args.output}_report.csv", index=False)
             status_counts = report['Status'].value_counts()
-            print("\nAnalysis Summary:")
+    print("\nAnalysis Summary:")
             print(f"Total TEs found: {len(report)}")
-            print("\nTE Status Distribution:")
-            for status, count in status_counts.items():
-                print(f"{status}: {count}")
+    print("\nTE Status Distribution:")
+    for status, count in status_counts.items():
+        print(f"{status}: {count}")
         else:
             print("\nNo TEs were found in the analysis.")
             
