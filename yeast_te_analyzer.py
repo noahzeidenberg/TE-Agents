@@ -154,13 +154,13 @@ class YeastTEAnalyzer:
         current_dir = os.getcwd()
         os.chdir(self.output_dir)
         
-        # EDTA command with corrected parameters
+        # EDTA command with modified parameters
         cmd = [
             "perl",
             f"{self.tools_dir}/EDTA/EDTA.pl",
             "--genome", abs_genome,
             "--species", "others",
-            "--step", "all",
+            "--step", "LTR,TIR,Helitron",  # Skip SINE analysis
             "--cds", abs_gff,
             "--curatedlib", abs_lib,
             "--threads", str(os.environ.get("SLURM_CPUS_PER_TASK", "4")),
