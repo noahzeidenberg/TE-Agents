@@ -151,7 +151,7 @@ class YeastTEAnalyzer:
         env["PATH"] = f"{self.tools_dir}/RepeatMasker:{self.tools_dir}/EDTA:{self.tools_dir}/rmblast/bin:{env.get('PATH', '')}"
         env["PERL5LIB"] = f"{self.tools_dir}/perl5/lib/perl5:{env.get('PERL5LIB', '')}"
         
-        # EDTA command with all necessary parameters
+        # EDTA command with corrected parameters
         cmd = [
             "perl",
             f"{self.tools_dir}/EDTA/EDTA.pl",
@@ -163,16 +163,15 @@ class YeastTEAnalyzer:
             "--threads", str(os.environ.get("SLURM_CPUS_PER_TASK", "4")),
             "--force", "1",
             "--anno", "1",
-            "--outdir", abs_output
+            "-out", abs_output  # Changed from --outdir to -out
         ]
         
         print("Running command:", " ".join(cmd))
         try:
-            subprocess.run(cmd, env=env, check=True)
+            subprocess.run(cmd, env=env, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as e:
             print(f"EDTA analysis failed: {e}")
-            if hasattr(e, 'output'):
-                print("Error output:", e.output)
+            print("Error output:", e.stderr)  # Added stderr output for better error reporting
             raise
 
     def _parse_edta_output(self):
