@@ -107,11 +107,33 @@ if [ ! -d "genometools" ]; then
     cd $TOOLS_DIR
 fi
 
+# Install EDTA dependencies
+echo "Installing EDTA dependencies..."
+PERL_MM_OPT="INSTALL_BASE=$TOOLS_DIR/perl5" \
+PERL5LIB="$TOOLS_DIR/perl5/lib/perl5" \
+$CPANM --local-lib=$TOOLS_DIR/perl5 \
+    Bio::DB::EUtilities \
+    Bio::SearchIO \
+    Bio::Tools::GFF \
+    Text::Soundex \
+    File::Which
+
+# Clone and install AnnoSINE2
+if [ ! -d "AnnoSINE2" ]; then
+    echo "Installing AnnoSINE2..."
+    git clone https://github.com/oushujun/AnnoSINE2.git
+    cd AnnoSINE2
+    chmod +x AnnoSINE2.pl
+    cd ..
+    # Add AnnoSINE2 to EDTA's util directory
+    cp AnnoSINE2/AnnoSINE2.pl EDTA/util/
+fi
+
 # Create/update configuration file
 echo "Creating/updating tools configuration..."
 cat > $TOOLS_DIR/tools_config.sh << EOF
 # Tool paths
-export PATH="$TOOLS_DIR/genometools/bin:$TOOLS_DIR/RepeatMasker:$TOOLS_DIR/EDTA:$TOOLS_DIR/rmblast/bin:$PATH"
+export PATH="$TOOLS_DIR/genometools/bin:$TOOLS_DIR/RepeatMasker:$TOOLS_DIR/EDTA:$TOOLS_DIR/rmblast/bin:$TOOLS_DIR/AnnoSINE2:$PATH"
 export PERL5LIB="$TOOLS_DIR/perl5/lib/perl5:$PERL5LIB"
 # Python virtual environment
 source $TOOLS_DIR/venv/bin/activate
