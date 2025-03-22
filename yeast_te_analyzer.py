@@ -18,6 +18,7 @@ import shutil
 import json
 from pathlib import Path
 from itertools import product
+import sys
 
 Entrez.email = "nzeidenb@uoguelph.ca"
 
@@ -110,6 +111,12 @@ class YeastTEAnalyzer:
         self.te_annotations = []
         self.gff_features = []
         self.nearby_features = {}
+        self.gene_annotations = defaultdict(list)
+        
+        # Get tools directory
+        self.tools_dir = os.path.expanduser("~/scratch/tools")
+        if not os.path.exists(self.tools_dir):
+            raise RuntimeError(f"Tools directory not found at {self.tools_dir}")
         
         # Create output directory
         Path(self.output_dir).mkdir(exist_ok=True)
@@ -139,15 +146,21 @@ class YeastTEAnalyzer:
         abs_lib = os.path.abspath(self.curated_library)
         abs_output = os.path.abspath(self.output_dir)
         
+        # Set up environment
+        env = os.environ.copy()
+        env["PATH"] = f"{self.tools_dir}/RepeatMasker:{self.tools_dir}/EDTA:{self.tools_dir}/rmblast/bin:{env.get('PATH', '')}"
+        env["PERL5LIB"] = f"{self.tools_dir}/perl5/lib/perl5:{env.get('PERL5LIB', '')}"
+        
         # EDTA command with all necessary parameters
         cmd = [
-            "perl", "EDTA/EDTA.pl",  # Assuming EDTA is cloned in the current directory
+            "perl",
+            f"{self.tools_dir}/EDTA/EDTA.pl",
             "--genome", abs_genome,
             "--species", "others",
             "--step", "all",
             "--cds", abs_gff,
             "--curatedlib", abs_lib,
-            "--threads", "4",
+            "--threads", str(os.environ.get("SLURM_CPUS_PER_TASK", "4")),
             "--force", "1",
             "--anno", "1",
             "--outdir", abs_output
@@ -155,7 +168,7 @@ class YeastTEAnalyzer:
         
         print("Running command:", " ".join(cmd))
         try:
-            subprocess.run(cmd, check=True)
+            subprocess.run(cmd, env=env, check=True)
         except subprocess.CalledProcessError as e:
             print(f"EDTA analysis failed: {e}")
             if hasattr(e, 'output'):
@@ -392,21 +405,42 @@ def main():
     
     args = parser.parse_args()
     
-    analyzer = YeastTEAnalyzer(args.genome, args.gff)
-    analyzer.analyze()
+    # Verify tools installation
+    tools_dir = os.path.expanduser("~/scratch/tools")
+    required_tools = {
+        "RepeatMasker": f"{tools_dir}/RepeatMasker/RepeatMasker",
+        "EDTA": f"{tools_dir}/EDTA/EDTA.pl",
+        "rmblast": f"{tools_dir}/rmblast/bin/rmblastn"
+    }
     
-    # Generate and save report
-    report = analyzer.generate_report()
-    if not report.empty:
-        report.to_csv(f"{args.output}_report.csv", index=False)
-        status_counts = report['Status'].value_counts()
-        print("\nAnalysis Summary:")
-        print(f"Total TEs found: {len(report)}")
-        print("\nTE Status Distribution:")
-        for status, count in status_counts.items():
-            print(f"{status}: {count}")
-    else:
-        print("\nNo TEs were found in the analysis.")
+    for tool, path in required_tools.items():
+        if not os.path.exists(path):
+            print(f"Error: {tool} not found at {path}")
+            print("Please ensure setup_tools.sh completed successfully")
+            sys.exit(1)
+    
+    print("Found all required tools")
+    
+    try:
+        analyzer = YeastTEAnalyzer(args.genome, args.gff)
+        analyzer.analyze()
+        
+        # Generate and save report
+        report = analyzer.generate_report()
+        if not report.empty:
+            report.to_csv(f"{args.output}_report.csv", index=False)
+            status_counts = report['Status'].value_counts()
+            print("\nAnalysis Summary:")
+            print(f"Total TEs found: {len(report)}")
+            print("\nTE Status Distribution:")
+            for status, count in status_counts.items():
+                print(f"{status}: {count}")
+        else:
+            print("\nNo TEs were found in the analysis.")
+            
+    except Exception as e:
+        print(f"Error during analysis: {e}")
+        raise
 
 if __name__ == "__main__":
     main() 
