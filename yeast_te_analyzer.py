@@ -446,7 +446,6 @@ def main():
         print(f"{status}: {count}")
         else:
             print("\nNo TEs were found in the analysis.")
-            
     except Exception as e:
         print(f"Error during analysis: {e}")
         raise
