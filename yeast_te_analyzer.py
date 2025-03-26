@@ -189,10 +189,12 @@ class YeastTEAnalyzer:
         # Get available resources
         threads = int(os.environ.get("SLURM_CPUS_PER_TASK", "4"))
         
-        # Create a clean environment for RepeatMasker
-        os.environ.pop('PYTHONPATH', None)  # Remove PYTHONPATH if it exists
+        # Create a clean environment for RepeatMasker but preserve PATH
+        env = os.environ.copy()  # Copy current environment including module-loaded paths
+        env.pop('PYTHONPATH', None)  # Remove PYTHONPATH if it exists
+        env['HOME'] = '/tmp'  # Use /tmp for cache files
         
-        # Run RepeatMasker with absolute paths and clean environment
+        # Run RepeatMasker with absolute paths and modified environment
         rm_cmd = [
             "apptainer", "exec",
             "--cleanenv",  # Use clean container environment
@@ -202,20 +204,17 @@ class YeastTEAnalyzer:
             f"{self.tools_dir}/repeatmasker.sif",
             "RepeatMasker",
             "-pa", str(threads),
-            "-lib", f"/data/{os.path.basename(abs_lib)}",  # Use absolute path inside container
+            "-lib", f"/data/{os.path.basename(abs_lib)}",
             "-gff",
-            "-dir", "/data",  # Use absolute path for output
+            "-dir", "/data",
             "-nolow",
             "-no_is",
-            f"/data/{os.path.basename(abs_genome)}"  # Use absolute path for input
+            f"/data/{os.path.basename(abs_genome)}"
         ]
         
         print("Running RepeatMasker command:", " ".join(rm_cmd))
         try:
-            subprocess.run(rm_cmd, check=True, env={
-                'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-                'HOME': '/tmp'  # Use /tmp for cache files
-            })
+            subprocess.run(rm_cmd, check=True, env=env)  # Use the modified environment
         except subprocess.CalledProcessError as e:
             print(f"RepeatMasker analysis failed: {e}")
             if hasattr(e, 'output'):
