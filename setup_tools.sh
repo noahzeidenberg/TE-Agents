@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --account=def-yourpi
+#SBATCH --account=def-lukens
 #SBATCH --time=2:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
@@ -38,7 +38,7 @@ else
     echo "RMBlast already installed, skipping..."
 fi
 
-# Function to download with retry
+# Function to download with retry using curl as backup
 download_with_retry() {
     local url=$1
     local output=$2
@@ -46,51 +46,78 @@ download_with_retry() {
     local attempt=1
     
     while [ $attempt -le $max_attempts ]; do
-        echo "Download attempt $attempt of $max_attempts..."
-        if wget --no-check-certificate -q -O "$output" "$url"; then
+        echo "Download attempt $attempt of $max_attempts using wget..."
+        if wget --no-check-certificate -O "$output" "$url"; then
             return 0
         fi
+        
+        echo "Wget failed, trying curl..."
+        if curl -k -L -o "$output" "$url"; then
+            return 0
+        fi
+        
         attempt=$((attempt + 1))
         sleep 5
     done
     return 1
 }
 
-# Try to use pre-installed RepeatMasker from cvmfs first
-if [ -d "/cvmfs/soft.computecanada.ca/easybuild/software/2020/avx2/Core/repeatmasker" ]; then
-    echo "Using system RepeatMasker..."
-    ln -sf /cvmfs/soft.computecanada.ca/easybuild/software/2020/avx2/Core/repeatmasker $TOOLS_DIR/RepeatMasker
+# Try to use module-provided RepeatMasker first
+if module avail -t 2>&1 | grep -q "^repeatmasker/"; then
+    echo "Loading RepeatMasker module..."
+    module load repeatmasker
+    # Create symlink in our tools directory
+    ln -sf $(dirname $(which RepeatMasker)) $TOOLS_DIR/RepeatMasker
 else
     # Install RepeatMasker if not present or not configured
     if [ ! -x "RepeatMasker/RepeatMasker" ] || [ ! -f "RepeatMasker/Libraries/Dfam.h5" ]; then
         echo "Setting up RepeatMasker..."
         
+        # Set up Python environment first
+        if [ ! -d "$TOOLS_DIR/venv" ]; then
+            echo "Setting up Python environment..."
+            python -m venv $TOOLS_DIR/venv
+            source $TOOLS_DIR/venv/bin/activate
+            pip install --no-cache-dir numpy h5py
+        else
+            source $TOOLS_DIR/venv/bin/activate
+        fi
+        
         # Clone only if directory doesn't exist
         if [ ! -d "RepeatMasker" ]; then
-            # Try multiple mirrors
-            if ! git clone https://github.com/rmhubley/RepeatMasker.git; then
-                if ! git clone https://gitlab.com/dfam/repeatmasker.git RepeatMasker; then
-                    echo "Failed to clone RepeatMasker from any source"
-                    exit 1
+            echo "Downloading RepeatMasker..."
+            # Try direct download first
+            if ! download_with_retry "https://www.repeatmasker.org/RepeatMasker/RepeatMasker-4.1.5.tar.gz" "RepeatMasker.tar.gz"; then
+                echo "Direct download failed, trying git clone..."
+                if ! git clone https://github.com/rmhubley/RepeatMasker.git; then
+                    if ! git clone https://gitlab.com/dfam/repeatmasker.git RepeatMasker; then
+                        echo "Failed to obtain RepeatMasker from any source"
+                        exit 1
+                    fi
                 fi
+            else
+                tar xzf RepeatMasker.tar.gz
+                rm RepeatMasker.tar.gz
             fi
         fi
         
         cd RepeatMasker
+        mkdir -p Libraries
         
         # Download Dfam library if needed with multiple fallback URLs
-        if [ ! -f "Dfam.h5" ]; then
+        if [ ! -f "Libraries/Dfam.h5" ]; then
             echo "Downloading Dfam library..."
             urls=(
                 "https://www.dfam.org/releases/Dfam_3.7/families/Dfam.h5.gz"
                 "https://dfam.org/releases/Dfam_3.7/families/Dfam.h5.gz"
                 "https://www.dfam.org/releases/current/families/Dfam.h5.gz"
+                "https://www.repeatmasker.org/libraries/Dfam.h5.gz"
             )
             
             success=false
             for url in "${urls[@]}"; do
-                if download_with_retry "$url" "Dfam.h5.gz"; then
-                    gunzip Dfam.h5.gz
+                if download_with_retry "$url" "Libraries/Dfam.h5.gz"; then
+                    gunzip Libraries/Dfam.h5.gz
                     success=true
                     break
                 fi
@@ -102,22 +129,13 @@ else
             fi
         fi
         
-        # Set up Python environment if needed
-        if [ ! -d "$TOOLS_DIR/venv" ]; then
-            echo "Setting up Python environment..."
-            python -m venv $TOOLS_DIR/venv
-            source $TOOLS_DIR/venv/bin/activate
-            pip install --no-cache-dir numpy h5py
-        fi
-        
         # Configure RepeatMasker
         echo "Configuring RepeatMasker..."
-        source $TOOLS_DIR/venv/bin/activate  # Ensure h5py is available
         perl ./configure \
             -trf_prgm $(which trf) \
             -hmmer_dir $(dirname $(which hmmsearch)) \
             -rmblast_dir $TOOLS_DIR/rmblast/bin \
-            -libdir $TOOLS_DIR/RepeatMasker/Libraries \
+            -libdir $PWD/Libraries \
             -default_search_engine hmmer
         
         cd $TOOLS_DIR
