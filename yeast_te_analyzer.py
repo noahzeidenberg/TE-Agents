@@ -432,18 +432,18 @@ def main():
     
     try:
         analyzer = YeastTEAnalyzer(args.genome, args.gff)
-    analyzer.analyze()
+        analyzer.analyze()
     
     # Generate and save report
-    report = analyzer.generate_report()
+        report = analyzer.generate_report()
         if not report.empty:
             report.to_csv(f"{args.output}_report.csv", index=False)
             status_counts = report['Status'].value_counts()
-    print("\nAnalysis Summary:")
+            print("\nAnalysis Summary:")
             print(f"Total TEs found: {len(report)}")
-    print("\nTE Status Distribution:")
-    for status, count in status_counts.items():
-        print(f"{status}: {count}")
+            print("\nTE Status Distribution:")
+            for status, count in status_counts.items():
+                print(f"{status}: {count}")
         else:
             print("\nNo TEs were found in the analysis.")
     except Exception as e:
