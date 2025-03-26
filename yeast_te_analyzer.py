@@ -179,8 +179,7 @@ class YeastTEAnalyzer:
         shutil.copy(abs_gff, os.path.basename(abs_gff))
         shutil.copy(abs_lib, os.path.basename(abs_lib))
         
-        # Get available memory in GB
-        mem_gb = int(os.environ.get("SLURM_MEM_PER_NODE", "16")) // 2
+        # Get available resources
         threads = int(os.environ.get("SLURM_CPUS_PER_TASK", "4"))
         
         # First, run RepeatMasker directly from the container
@@ -195,7 +194,7 @@ class YeastTEAnalyzer:
             "-species", "fungi",
             "-gff",
             "-dir", ".",
-            container_genome
+            os.path.basename(abs_genome)  # Use local path since we copied the file
         ]
         
         print("Running RepeatMasker command:", " ".join(rm_cmd))
@@ -208,15 +207,14 @@ class YeastTEAnalyzer:
             os.chdir(current_dir)
             raise
         
-        # Then run EDTA from your tools directory
+        # Then run EDTA directly (not from container)
         edta_cmd = [
-            "perl",
             f"{self.tools_dir}/EDTA/EDTA.pl",
-            "--genome", container_genome,
+            "--genome", os.path.basename(abs_genome),  # Use local path
             "--species", "others",
             "--step", "LTR,TIR,Helitron",
-            "--cds", container_gff,
-            "--curatedlib", container_lib,
+            "--cds", os.path.basename(abs_gff),  # Use local path
+            "--curatedlib", os.path.basename(abs_lib),  # Use local path
             "--threads", str(threads),
             "--overwrite", "1",
             "--sensitive", "1",
