@@ -26,6 +26,13 @@ module load hmmer/3.3.2
 module load trf/4.09.1
 module load perl/5.30.2
 
+# Load Apptainer module if available
+if module avail -t 2>&1 | grep -q "^apptainer/"; then
+    module load apptainer
+elif module avail -t 2>&1 | grep -q "^singularity/"; then
+    module load singularity
+fi
+
 # Install rmblast if not present or if rmblastn is not executable
 if [ ! -x "rmblast/bin/rmblastn" ]; then
     echo "Installing RMBlast..."
@@ -64,115 +71,63 @@ download_with_retry() {
     return 1
 }
 
-# Try to use Apptainer for RepeatMasker first
+# Try to use Apptainer/Singularity for RepeatMasker
 if command_exists apptainer || command_exists singularity; then
-    echo "Setting up RepeatMasker using Apptainer..."
+    echo "Setting up RepeatMasker using container..."
     mkdir -p $TOOLS_DIR/RepeatMasker
     
-    # Pull the RepeatMasker container
-    cd $TOOLS_DIR
-    if [ ! -f "repeatmasker.sif" ]; then
-        apptainer pull docker://dfam/repeatmasker:4.1.5
-        mv repeatmasker_4.1.5.sif repeatmasker.sif
+    # Use whichever command is available
+    CONTAINER_CMD=$(command -v apptainer || command -v singularity)
+    
+    # Pull the container if not present
+    if [ ! -f "$TOOLS_DIR/repeatmasker.sif" ]; then
+        echo "Downloading RepeatMasker container..."
+        $CONTAINER_CMD pull docker://dfam/tetools:latest
+        mv tetools_latest.sif $TOOLS_DIR/repeatmasker.sif
     fi
     
-    # Create a wrapper script for RepeatMasker
+    # Create wrapper scripts for the tools
     cat > $TOOLS_DIR/RepeatMasker/RepeatMasker << 'EOF'
 #!/bin/bash
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTAINER="$SCRIPT_DIR/../repeatmasker.sif"
-apptainer exec $CONTAINER RepeatMasker "$@"
+CONTAINER_CMD=$(command -v apptainer || command -v singularity)
+
+# Convert input paths to absolute paths
+ARGS=()
+for arg in "$@"; do
+    if [ -e "$arg" ]; then
+        ARGS+=("$(readlink -f "$arg")")
+    else
+        ARGS+=("$arg")
+    fi
+done
+
+$CONTAINER_CMD exec \
+    -B "$PWD" \
+    -B "$TMPDIR" \
+    -B "/scratch" \
+    "$CONTAINER" \
+    RepeatMasker "${ARGS[@]}"
 EOF
     chmod +x $TOOLS_DIR/RepeatMasker/RepeatMasker
     
+    # Create symlinks for other tools from the container
+    for tool in rmblastn trf; do
+        cat > "$TOOLS_DIR/RepeatMasker/$tool" << EOF
+#!/bin/bash
+SCRIPT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+CONTAINER="\$SCRIPT_DIR/../repeatmasker.sif"
+CONTAINER_CMD=\$(command -v apptainer || command -v singularity)
+exec \$CONTAINER_CMD exec "\$CONTAINER" $tool "\$@"
+EOF
+        chmod +x "$TOOLS_DIR/RepeatMasker/$tool"
+    done
+    
+    echo "RepeatMasker container setup complete"
 else
-    # Install RepeatMasker if not present or not configured
-    if [ ! -x "RepeatMasker/RepeatMasker" ] || [ ! -f "RepeatMasker/Libraries/Dfam.h5" ]; then
-        echo "Setting up RepeatMasker..."
-        
-        # Set up Python environment first
-        if [ ! -d "$TOOLS_DIR/venv" ]; then
-            echo "Setting up Python environment..."
-            python -m venv $TOOLS_DIR/venv
-            source $TOOLS_DIR/venv/bin/activate
-            pip install --no-cache-dir numpy h5py
-        else
-            source $TOOLS_DIR/venv/bin/activate
-        fi
-        
-        # Clone only if directory doesn't exist
-        if [ ! -d "RepeatMasker" ]; then
-            echo "Downloading RepeatMasker..."
-            # Try direct download first
-            if ! download_with_retry "https://www.repeatmasker.org/RepeatMasker/RepeatMasker-4.1.5.tar.gz" "RepeatMasker.tar.gz"; then
-                echo "Direct download failed, trying git clone..."
-                if ! git clone https://github.com/rmhubley/RepeatMasker.git; then
-                    if ! git clone https://gitlab.com/dfam/repeatmasker.git RepeatMasker; then
-                        echo "Failed to obtain RepeatMasker from any source"
-                        exit 1
-                    fi
-                fi
-            else
-                tar xzf RepeatMasker.tar.gz
-                rm RepeatMasker.tar.gz
-            fi
-        fi
-        
-        cd RepeatMasker
-        mkdir -p Libraries
-        
-        # Download Dfam library if needed
-        if [ ! -f "Libraries/Dfam.h5" ]; then
-            echo "Downloading Dfam library..."
-            
-            # Try downloading the fungi-specific subset first (much smaller)
-            urls=(
-                "https://www.dfam.org/releases/Dfam_3.7/families/fungi/Dfam.h5.gz"
-                "https://www.dfam.org/releases/current/families/fungi/Dfam.h5.gz"
-                "https://www.dfam.org/releases/Dfam_3.7/families/Dfam.h5.gz"
-                "https://www.dfam.org/releases/current/families/Dfam.h5.gz"
-            )
-            
-            success=false
-            for url in "${urls[@]}"; do
-                echo "Trying URL: $url"
-                if download_with_retry "$url" "Libraries/Dfam.h5.gz"; then
-                    gunzip Libraries/Dfam.h5.gz
-                    success=true
-                    break
-                fi
-            done
-            
-            if ! $success; then
-                echo "Failed to download Dfam library from any source"
-                exit 1
-            fi
-            
-            # Use famdb.py to export the library
-            if [ ! -f "Libraries/famdb.py" ]; then
-                wget -O Libraries/famdb.py "https://raw.githubusercontent.com/Dfam-consortium/FamDB/master/famdb.py"
-                chmod +x Libraries/famdb.py
-            fi
-            
-            # Create the RepeatMasker library from FamDB
-            cd Libraries
-            python3 famdb.py -i . export consensus -f embl > Dfam.embl
-            cd ..
-        fi
-        
-        # Configure RepeatMasker
-        echo "Configuring RepeatMasker..."
-        perl ./configure \
-            -trf_prgm $(which trf) \
-            -hmmer_dir $(dirname $(which hmmsearch)) \
-            -rmblast_dir $TOOLS_DIR/rmblast/bin \
-            -libdir $PWD/Libraries \
-            -default_search_engine hmmer
-        
-        cd $TOOLS_DIR
-    else
-        echo "RepeatMasker already installed and configured, skipping..."
-    fi
+    echo "Error: Neither Apptainer nor Singularity is available. Please load the appropriate module."
+    exit 1
 fi
 
 # Install EDTA and dependencies if not present
