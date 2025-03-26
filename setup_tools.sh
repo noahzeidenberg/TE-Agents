@@ -38,38 +38,27 @@ else
     echo "RMBlast already installed, skipping..."
 fi
 
-# Function to download with retry using aria2 for better performance
+# Function to download with retry using optimized wget
 download_with_retry() {
     local url=$1
     local output=$2
     local max_attempts=3
     local attempt=1
     
-    # Install aria2 if not present (much faster than wget/curl)
-    if ! command_exists aria2c; then
-        echo "Installing aria2 for faster downloads..."
-        if command_exists apt-get; then
-            sudo apt-get install -y aria2
-        elif command_exists yum; then
-            sudo yum install -y aria2
-        else
-            echo "Please install aria2 manually for better download performance"
-        fi
-    fi
-    
     while [ $attempt -le $max_attempts ]; do
         echo "Download attempt $attempt of $max_attempts..."
-        
-        if command_exists aria2c; then
-            # Use aria2 with multiple connections and continue support
-            if aria2c --continue=true --max-connection-per-server=16 --split=16 "$url" -o "$output"; then
-                return 0
-            fi
-        else
-            # Fallback to wget
-            if wget --no-check-certificate --continue -O "$output" "$url"; then
-                return 0
-            fi
+        if wget \
+            --no-check-certificate \
+            --continue \
+            --timeout=60 \
+            --waitretry=60 \
+            --tries=10 \
+            --retry-connrefused \
+            --dns-timeout=60 \
+            --connect-timeout=60 \
+            --read-timeout=60 \
+            -O "$output" "$url"; then
+            return 0
         fi
         
         attempt=$((attempt + 1))
@@ -122,17 +111,28 @@ else
         
         # Download Dfam library if needed
         if [ ! -f "Libraries/Dfam.h5" ]; then
-            echo "Downloading Dfam libraries..."
+            echo "Downloading Dfam library..."
             
-            # Download root partition (required, only 74MB)
-            if ! download_with_retry "https://www.dfam.org/releases/current/families/FamDB/0.h5" "Libraries/dfam.0.h5"; then
-                echo "Failed to download root partition"
-                exit 1
-            fi
+            # Try downloading the fungi-specific subset first (much smaller)
+            urls=(
+                "https://www.dfam.org/releases/Dfam_3.7/families/fungi/Dfam.h5.gz"
+                "https://www.dfam.org/releases/current/families/fungi/Dfam.h5.gz"
+                "https://www.dfam.org/releases/Dfam_3.7/families/Dfam.h5.gz"
+                "https://www.dfam.org/releases/current/families/Dfam.h5.gz"
+            )
             
-            # Download fungi partition (partition 16, 35GB)
-            if ! download_with_retry "https://www.dfam.org/releases/current/families/FamDB/16.h5" "Libraries/dfam.16.h5"; then
-                echo "Failed to download fungi partition"
+            success=false
+            for url in "${urls[@]}"; do
+                echo "Trying URL: $url"
+                if download_with_retry "$url" "Libraries/Dfam.h5.gz"; then
+                    gunzip Libraries/Dfam.h5.gz
+                    success=true
+                    break
+                fi
+            done
+            
+            if ! $success; then
+                echo "Failed to download Dfam library from any source"
                 exit 1
             fi
             
