@@ -169,11 +169,6 @@ class YeastTEAnalyzer:
         current_dir = os.getcwd()
         os.chdir(self.output_dir)
         
-        # Modify paths to be container-relative
-        container_genome = f"/data/{os.path.basename(abs_genome)}"
-        container_gff = f"/data/{os.path.basename(abs_gff)}"
-        container_lib = f"/data/{os.path.basename(abs_lib)}"
-        
         # Copy files to current directory for container access
         shutil.copy(abs_genome, os.path.basename(abs_genome))
         shutil.copy(abs_gff, os.path.basename(abs_gff))
@@ -182,9 +177,26 @@ class YeastTEAnalyzer:
         # Get available resources
         threads = int(os.environ.get("SLURM_CPUS_PER_TASK", "4"))
         
-        # First, run RepeatMasker directly from the container
+        # First, ensure the container has the required dependencies
+        setup_cmd = [
+            "apptainer", "exec",
+            "-B", f"{current_dir}:/data",
+            "-B", "/scratch",
+            "-B", "/tmp",
+            f"{self.tools_dir}/repeatmasker.sif",
+            "bash", "-c",
+            "apt-get update && apt-get install -y libflexiblas3 python3-numpy python3-h5py"
+        ]
+        
+        try:
+            subprocess.run(setup_cmd, check=True)
+        except subprocess.CalledProcessError as e:
+            print("Warning: Could not install dependencies in container. Continuing anyway...")
+        
+        # Then run RepeatMasker
         rm_cmd = [
             "apptainer", "exec",
+            "--env", "PYTHONPATH=/usr/lib/python3/dist-packages",  # Use system Python packages
             "-B", f"{current_dir}:/data",
             "-B", "/scratch",
             "-B", "/tmp",
@@ -194,7 +206,7 @@ class YeastTEAnalyzer:
             "-species", "fungi",
             "-gff",
             "-dir", ".",
-            os.path.basename(abs_genome)  # Use local path since we copied the file
+            os.path.basename(abs_genome)
         ]
         
         print("Running RepeatMasker command:", " ".join(rm_cmd))
