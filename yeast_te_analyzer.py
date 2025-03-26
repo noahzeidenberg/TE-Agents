@@ -124,11 +124,6 @@ class YeastTEAnalyzer:
         self.nearby_features = {}
         self.gene_annotations = defaultdict(list)
         
-        # Get tools directory
-        self.tools_dir = os.path.expanduser("~/scratch/tools")
-        if not os.path.exists(self.tools_dir):
-            raise RuntimeError(f"Tools directory not found at {self.tools_dir}")
-        
         # Create output directory
         Path(self.output_dir).mkdir(exist_ok=True)
         
@@ -169,92 +164,45 @@ class YeastTEAnalyzer:
         self.curated_library = library_file
 
     def _run_edta(self):
-        """Run EDTA analysis using container"""
-        print("Running EDTA analysis...")
+        """Run RepeatMasker analysis"""
+        print("Running RepeatMasker analysis...")
         
-        # Get absolute paths
+        # Get absolute paths and prepare files
         abs_genome = os.path.abspath(self.genome_file)
-        abs_gff = os.path.abspath(self.gff_file)
         abs_lib = os.path.abspath(self.curated_library)
         
-        # Change to output directory before running EDTA
-        current_dir = os.getcwd()
-        os.chdir(self.output_dir)
-        
-        # Copy files to current directory for container access
-        shutil.copy(abs_genome, os.path.basename(abs_genome))
-        shutil.copy(abs_gff, os.path.basename(abs_gff))
-        shutil.copy(abs_lib, os.path.basename(abs_lib))
+        # Create output directory if it doesn't exist
+        os.makedirs(self.output_dir, exist_ok=True)
         
         # Get available resources
         threads = int(os.environ.get("SLURM_CPUS_PER_TASK", "4"))
         
-        # Create a clean environment for RepeatMasker but preserve PATH
-        env = os.environ.copy()  # Copy current environment including module-loaded paths
-        env.pop('PYTHONPATH', None)  # Remove PYTHONPATH if it exists
-        env['HOME'] = '/tmp'  # Use /tmp for cache files
-        
-        # Run RepeatMasker with absolute paths and modified environment
+        # Run RepeatMasker using only our curated library
         rm_cmd = [
-            "apptainer", "exec",
-            "--cleanenv",  # Use clean container environment
-            "-B", f"{current_dir}:/data",
-            "-B", "/scratch",
-            "-B", "/tmp",
-            f"{self.tools_dir}/repeatmasker.sif",
             "RepeatMasker",
             "-pa", str(threads),
-            "-lib", f"/data/{os.path.basename(abs_lib)}",
+            "-lib", abs_lib,  # Use our curated yeast TE library
             "-gff",
-            "-dir", "/data",
-            "-nolow",
-            "-no_is",
-            f"/data/{os.path.basename(abs_genome)}"
+            "-dir", self.output_dir,
+            "-nolow",  # Skip low complexity repeats
+            "-no_is",  # Skip bacterial insertion elements
+            "-engine", "ncbi",  # Use the NCBI engine explicitly
+            abs_genome
         ]
         
         print("Running RepeatMasker command:", " ".join(rm_cmd))
         try:
-            subprocess.run(rm_cmd, check=True, env=env)  # Use the modified environment
+            subprocess.run(rm_cmd, check=True)
         except subprocess.CalledProcessError as e:
             print(f"RepeatMasker analysis failed: {e}")
-            if hasattr(e, 'output'):
-                print("Error output:", e.output)
-            os.chdir(current_dir)
             raise
-        
-        # Then run EDTA directly (not from container)
-        edta_cmd = [
-            f"{self.tools_dir}/EDTA/EDTA.pl",
-            "--genome", os.path.basename(abs_genome),
-            "--species", "others",
-            "--step", "LTR,TIR,Helitron",
-            "--cds", os.path.basename(abs_gff),
-            "--curatedlib", os.path.basename(abs_lib),
-            "--threads", str(threads),
-            "--overwrite", "1",
-            "--sensitive", "1",
-            "--force", "1",
-            "--anno", "1"
-        ]
-        
-        print("Running EDTA command:", " ".join(edta_cmd))
-        try:
-            subprocess.run(edta_cmd, check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"EDTA analysis failed: {e}")
-            if hasattr(e, 'output'):
-                print("Error output:", e.output)
-            os.chdir(current_dir)
-            raise
-        
-        os.chdir(current_dir)
 
     def _parse_edta_output(self):
-        """Parse EDTA output files"""
-        # Parse the main annotation file - note the path is relative to output directory
-        anno_file = os.path.join(self.output_dir, os.path.basename(self.genome_file) + ".mod.EDTA.TEanno.gff3")
+        """Parse RepeatMasker output files"""
+        # Update to parse RepeatMasker output instead of EDTA
+        anno_file = os.path.join(self.output_dir, os.path.basename(self.genome_file) + ".out.gff")
         
-        print(f"Parsing EDTA annotations: {anno_file}")
+        print(f"Parsing RepeatMasker annotations: {anno_file}")
         
         if not os.path.exists(anno_file):
             print(f"Warning: Annotation file not found at {anno_file}")
@@ -269,25 +217,25 @@ class YeastTEAnalyzer:
                 if len(fields) < 9:
                     continue
                 
-                if fields[2] == "transposable_element":
-                    attributes = dict(item.split('=') for item in fields[8].split(';') if '=' in item)
-                    
-                    # Extract TE family and status information
-                    te_family = self._get_te_family(attributes.get('Name', ''))
-                    if te_family is None:
-                        continue
-                    
-                    te = TEAnnotation(
-                        family=te_family,
-                        chromosome=fields[0],
-                        start=int(fields[3]),
-                        end=int(fields[4]),
-                        strand=fields[6],
-                        sequence="",  # We'll fill this later if needed
-                        _status=self._determine_status(attributes),
-                        _inactivation_reason=self._determine_inactivation(attributes)
-                    )
-                    self.te_annotations.append(te)
+                # Parse RepeatMasker GFF format
+                attributes = dict(item.split('=') for item in fields[8].split(';') if '=' in item)
+                name = attributes.get('Target', '').split()[0]
+                
+                te_family = self._get_te_family(name)
+                if te_family is None:
+                    continue
+                
+                te = TEAnnotation(
+                    family=te_family,
+                    chromosome=fields[0],
+                    start=int(fields[3]),
+                    end=int(fields[4]),
+                    strand=fields[6],
+                    sequence="",
+                    _status=self._determine_status(attributes),
+                    _inactivation_reason=self._determine_inactivation(attributes)
+                )
+                self.te_annotations.append(te)
 
     def _determine_status(self, attributes: Dict[str, str]) -> TEStatus:
         """Determine TE status from EDTA attributes"""
@@ -494,19 +442,11 @@ def main():
     
     args = parser.parse_args()
     
-    # Verify tools installation
-    tools_dir = os.path.expanduser("~/scratch/tools")
-    if not os.path.exists(f"{tools_dir}/repeatmasker.sif"):
-        print("Error: Container not found. Please ensure setup_tools.sh completed successfully")
-        sys.exit(1)
-    
-    print("Found required container")
-    
     try:
         analyzer = YeastTEAnalyzer(args.genome, args.gff)
         analyzer.analyze()
-    
-    # Generate and save report
+        
+        # Generate and save report
         report = analyzer.generate_report()
         if not report.empty:
             report.to_csv(f"{args.output}_report.csv", index=False)
