@@ -38,45 +38,38 @@ else
     echo "RMBlast already installed, skipping..."
 fi
 
-# Function to download with retry using rsync first, then wget/curl
+# Function to download with retry using aria2 for better performance
 download_with_retry() {
     local url=$1
     local output=$2
     local max_attempts=3
     local attempt=1
     
-    # Extract filename from URL
-    local filename=$(basename "$url")
-    
-    # Try rsync first from Compute Canada's repository if available
-    echo "Attempting rsync from Compute Canada mirror..."
-    if rsync -P --timeout=60 "/cvmfs/ref.science.gc.ca/datasets/Dfam/$filename" "$output"; then
-        return 0
+    # Install aria2 if not present (much faster than wget/curl)
+    if ! command_exists aria2c; then
+        echo "Installing aria2 for faster downloads..."
+        if command_exists apt-get; then
+            sudo apt-get install -y aria2
+        elif command_exists yum; then
+            sudo yum install -y aria2
+        else
+            echo "Please install aria2 manually for better download performance"
+        fi
     fi
     
-    # Try rsync from other known mirrors
-    mirrors=(
-        "rsync://ftp.dfam.org/dfam/current/families/"
-        "rsync://mirror.csclub.uwaterloo.ca/dfam/current/families/"
-    )
-    
-    for mirror in "${mirrors[@]}"; do
-        echo "Attempting rsync from $mirror..."
-        if rsync -P --timeout=60 "${mirror}${filename}" "$output"; then
-            return 0
-        fi
-    done
-    
-    # Fall back to wget/curl if rsync fails
     while [ $attempt -le $max_attempts ]; do
-        echo "Download attempt $attempt of $max_attempts using wget..."
-        if wget --no-check-certificate --continue -O "$output" "$url"; then
-            return 0
-        fi
+        echo "Download attempt $attempt of $max_attempts..."
         
-        echo "Wget failed, trying curl..."
-        if curl -k -L -C - -o "$output" "$url"; then
-            return 0
+        if command_exists aria2c; then
+            # Use aria2 with multiple connections and continue support
+            if aria2c --continue=true --max-connection-per-server=16 --split=16 "$url" -o "$output"; then
+                return 0
+            fi
+        else
+            # Fallback to wget
+            if wget --no-check-certificate --continue -O "$output" "$url"; then
+                return 0
+            fi
         fi
         
         attempt=$((attempt + 1))
@@ -127,30 +120,32 @@ else
         cd RepeatMasker
         mkdir -p Libraries
         
-        # Download Dfam library if needed with multiple fallback URLs
+        # Download Dfam library if needed
         if [ ! -f "Libraries/Dfam.h5" ]; then
-            echo "Downloading Dfam library..."
-            # Try yeast-specific subset first
-            urls=(
-                "https://www.dfam.org/releases/current/families/fungi/Dfam.h5.gz"
-                "https://www.dfam.org/releases/Dfam_3.7/families/fungi/Dfam.h5.gz"
-                "https://www.dfam.org/releases/current/families/Dfam.h5.gz"
-                "https://www.repeatmasker.org/libraries/Dfam.h5.gz"
-            )
+            echo "Downloading Dfam libraries..."
             
-            success=false
-            for url in "${urls[@]}"; do
-                if download_with_retry "$url" "Libraries/Dfam.h5.gz"; then
-                    gunzip Libraries/Dfam.h5.gz
-                    success=true
-                    break
-                fi
-            done
-            
-            if ! $success; then
-                echo "Failed to download Dfam library from any source"
+            # Download root partition (required, only 74MB)
+            if ! download_with_retry "https://www.dfam.org/releases/current/families/FamDB/0.h5" "Libraries/dfam.0.h5"; then
+                echo "Failed to download root partition"
                 exit 1
             fi
+            
+            # Download fungi partition (partition 16, 35GB)
+            if ! download_with_retry "https://www.dfam.org/releases/current/families/FamDB/16.h5" "Libraries/dfam.16.h5"; then
+                echo "Failed to download fungi partition"
+                exit 1
+            fi
+            
+            # Use famdb.py to export the library
+            if [ ! -f "Libraries/famdb.py" ]; then
+                wget -O Libraries/famdb.py "https://raw.githubusercontent.com/Dfam-consortium/FamDB/master/famdb.py"
+                chmod +x Libraries/famdb.py
+            fi
+            
+            # Create the RepeatMasker library from FamDB
+            cd Libraries
+            python3 famdb.py -i . export consensus -f embl > Dfam.embl
+            cd ..
         fi
         
         # Configure RepeatMasker
