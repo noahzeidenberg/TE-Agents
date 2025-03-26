@@ -151,6 +151,41 @@ done
 
 echo "RepeatMasker container setup complete"
 
+# Create wrapper script for AnnoSINE2 using the container
+echo "Setting up AnnoSINE2 from container..."
+mkdir -p $TOOLS_DIR/EDTA/util
+cat > $TOOLS_DIR/EDTA/util/AnnoSINE2.pl << 'EOF'
+#!/bin/bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONTAINER="$SCRIPT_DIR/../../../repeatmasker.sif"
+
+# Ensure we have access to the Apptainer module
+if [ -f "/etc/profile.d/modules.sh" ]; then
+    source /etc/profile.d/modules.sh
+    module load apptainer
+fi
+
+# Convert input paths to absolute paths
+ARGS=()
+for arg in "$@"; do
+    if [ -e "$arg" ]; then
+        ARGS+=("$(readlink -f "$arg")")
+    else
+        ARGS+=("$arg")
+    fi
+done
+
+apptainer exec \
+    -B "$PWD" \
+    -B "/scratch" \
+    -B "/tmp" \
+    "$CONTAINER" \
+    AnnoSINE2.pl "${ARGS[@]}"
+EOF
+chmod +x $TOOLS_DIR/EDTA/util/AnnoSINE2.pl
+
+echo "AnnoSINE2 setup complete"
+
 # Install EDTA and dependencies if not present
 if [ ! -x "EDTA/EDTA.pl" ]; then
     echo "Setting up EDTA..."
@@ -222,7 +257,7 @@ if [ ! -f "$CONFIG_FILE" ] || ! grep -q "AnnoSINE2" "$CONFIG_FILE"; then
     echo "Creating/updating tools configuration..."
     cat > "$CONFIG_FILE" << EOF
 # Tool paths
-export PATH="$TOOLS_DIR/genometools/bin:$TOOLS_DIR/RepeatMasker:$TOOLS_DIR/EDTA:$TOOLS_DIR/rmblast/bin:$TOOLS_DIR/AnnoSINE2:$PATH"
+export PATH="$TOOLS_DIR/genometools/bin:$TOOLS_DIR/RepeatMasker:$TOOLS_DIR/EDTA:$TOOLS_DIR/rmblast/bin:$PATH"
 export PERL5LIB="$TOOLS_DIR/perl5/lib/perl5:$PERL5LIB"
 # Python virtual environment
 source $TOOLS_DIR/venv/bin/activate
