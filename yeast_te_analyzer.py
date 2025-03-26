@@ -19,8 +19,19 @@ import json
 from pathlib import Path
 from itertools import product
 import sys
+import logging
 
 Entrez.email = "nzeidenb@uoguelph.ca"
+
+# At the start of the script:
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('yeast_te_analyzer.log'),
+        logging.StreamHandler()
+    ]
+)
 
 class TEFamily(Enum):
     """Yeast TE families"""
@@ -128,6 +139,15 @@ class YeastTEAnalyzer:
         """Prepare curated TE library from consensus sequences"""
         print("Preparing curated TE library...")
         
+        # Create consensus directory if it doesn't exist
+        Path("consensus").mkdir(exist_ok=True)
+        
+        # Check if consensus files exist
+        if not list(Path("consensus").glob("S288C_*.fsa")):
+            print("Warning: No consensus sequences found in consensus directory")
+            print("Please ensure S288C_*.fsa files are present in the consensus directory")
+            raise FileNotFoundError("Missing consensus sequence files")
+        
         library_file = "consensus/yeast_te_library.fasta"
         with open(library_file, 'w') as lib:
             for te_file in Path("consensus").glob("S288C_*.fsa"):
@@ -137,7 +157,7 @@ class YeastTEAnalyzer:
         self.curated_library = library_file
 
     def _run_edta(self):
-        """Run EDTA analysis directly (without container)"""
+        """Run EDTA analysis using container"""
         print("Running EDTA analysis...")
         
         # Get absolute paths
@@ -145,40 +165,59 @@ class YeastTEAnalyzer:
         abs_gff = os.path.abspath(self.gff_file)
         abs_lib = os.path.abspath(self.curated_library)
         
-        # Set up environment
-        env = os.environ.copy()
-        env["PATH"] = f"{self.tools_dir}/genometools/bin:{self.tools_dir}/RepeatMasker:{self.tools_dir}/EDTA:{self.tools_dir}/rmblast/bin:{env.get('PATH', '')}"
-        env["PERL5LIB"] = f"{self.tools_dir}/perl5/lib/perl5:{env.get('PERL5LIB', '')}"
-        
         # Change to output directory before running EDTA
         current_dir = os.getcwd()
         os.chdir(self.output_dir)
         
-        # EDTA command with modified parameters
+        # Modify paths to be container-relative
+        container_genome = f"/data/{os.path.basename(abs_genome)}"
+        container_gff = f"/data/{os.path.basename(abs_gff)}"
+        container_lib = f"/data/{os.path.basename(abs_lib)}"
+        
+        # Copy files to current directory for container access
+        shutil.copy(abs_genome, os.path.basename(abs_genome))
+        shutil.copy(abs_gff, os.path.basename(abs_gff))
+        shutil.copy(abs_lib, os.path.basename(abs_lib))
+        
+        # Get available memory in GB
+        mem_gb = int(os.environ.get("SLURM_MEM_PER_NODE", "16")) // 2  # Use half of available memory
+        threads = int(os.environ.get("SLURM_CPUS_PER_TASK", "4"))
+        
         cmd = [
-            "perl",
-            f"{self.tools_dir}/EDTA/EDTA.pl",
-            "--genome", abs_genome,
+            "apptainer", "exec",
+            "-B", f"{current_dir}:/data",
+            "-B", "/scratch",
+            "-B", "/tmp",
+            f"{self.tools_dir}/repeatmasker.sif",
+            "EDTA.pl",
+            "--genome", container_genome,  # Use container paths
             "--species", "others",
-            "--step", "LTR,TIR,Helitron",  # Skip SINE analysis
-            "--cds", abs_gff,
-            "--curatedlib", abs_lib,
-            "--threads", str(os.environ.get("SLURM_CPUS_PER_TASK", "4")),
+            "--step", "LTR,TIR,Helitron",
+            "--cds", container_gff,  # Use container paths
+            "--curatedlib", container_lib,  # Use container paths
+            "--threads", str(threads),
+            "--overwrite", "1",  # Add overwrite flag
+            "--sensitive", "1",  # Add sensitive mode for better detection
             "--force", "1",
             "--anno", "1"
         ]
         
         print("Running command:", " ".join(cmd))
         try:
-            subprocess.run(cmd, env=env, check=True)
+            # More robust module loading
+            module_cmd = "source /etc/profile.d/modules.sh && module load apptainer"
+            subprocess.run(module_cmd, shell=True, executable='/bin/bash', check=True)
+            
+            # Run EDTA command
+            subprocess.run(cmd, check=True)
         except subprocess.CalledProcessError as e:
             print(f"EDTA analysis failed: {e}")
             if hasattr(e, 'output'):
                 print("Error output:", e.output)
-            os.chdir(current_dir)  # Restore original directory
+            os.chdir(current_dir)
             raise
         
-        os.chdir(current_dir)  # Restore original directory
+        os.chdir(current_dir)
 
     def _parse_edta_output(self):
         """Parse EDTA output files"""
@@ -294,6 +333,17 @@ class YeastTEAnalyzer:
         try:
             for temp_file in Path(self.output_dir).glob("*.temp*"):
                 temp_file.unlink()
+        except OSError:
+            pass
+        
+        # Clean up copied input files
+        try:
+            if hasattr(self, 'genome_file'):
+                os.remove(os.path.basename(self.genome_file))
+            if hasattr(self, 'gff_file'):
+                os.remove(os.path.basename(self.gff_file))
+            if hasattr(self, 'curated_library'):
+                os.remove(os.path.basename(self.curated_library))
         except OSError:
             pass
 
@@ -416,19 +466,11 @@ def main():
     
     # Verify tools installation
     tools_dir = os.path.expanduser("~/scratch/tools")
-    required_tools = {
-        "RepeatMasker": f"{tools_dir}/RepeatMasker/RepeatMasker",
-        "EDTA": f"{tools_dir}/EDTA/EDTA.pl",
-        "rmblast": f"{tools_dir}/rmblast/bin/rmblastn"
-    }
+    if not os.path.exists(f"{tools_dir}/repeatmasker.sif"):
+        print("Error: Container not found. Please ensure setup_tools.sh completed successfully")
+        sys.exit(1)
     
-    for tool, path in required_tools.items():
-        if not os.path.exists(path):
-            print(f"Error: {tool} not found at {path}")
-            print("Please ensure setup_tools.sh completed successfully")
-            sys.exit(1)
-    
-    print("Found all required tools")
+    print("Found required container")
     
     try:
         analyzer = YeastTEAnalyzer(args.genome, args.gff)
