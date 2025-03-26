@@ -38,21 +38,44 @@ else
     echo "RMBlast already installed, skipping..."
 fi
 
-# Function to download with retry using curl as backup
+# Function to download with retry using rsync first, then wget/curl
 download_with_retry() {
     local url=$1
     local output=$2
     local max_attempts=3
     local attempt=1
     
+    # Extract filename from URL
+    local filename=$(basename "$url")
+    
+    # Try rsync first from Compute Canada's repository if available
+    echo "Attempting rsync from Compute Canada mirror..."
+    if rsync -P --timeout=60 "/cvmfs/ref.science.gc.ca/datasets/Dfam/$filename" "$output"; then
+        return 0
+    fi
+    
+    # Try rsync from other known mirrors
+    mirrors=(
+        "rsync://ftp.dfam.org/dfam/current/families/"
+        "rsync://mirror.csclub.uwaterloo.ca/dfam/current/families/"
+    )
+    
+    for mirror in "${mirrors[@]}"; do
+        echo "Attempting rsync from $mirror..."
+        if rsync -P --timeout=60 "${mirror}${filename}" "$output"; then
+            return 0
+        fi
+    done
+    
+    # Fall back to wget/curl if rsync fails
     while [ $attempt -le $max_attempts ]; do
         echo "Download attempt $attempt of $max_attempts using wget..."
-        if wget --no-check-certificate -O "$output" "$url"; then
+        if wget --no-check-certificate --continue -O "$output" "$url"; then
             return 0
         fi
         
         echo "Wget failed, trying curl..."
-        if curl -k -L -o "$output" "$url"; then
+        if curl -k -L -C - -o "$output" "$url"; then
             return 0
         fi
         
@@ -107,9 +130,10 @@ else
         # Download Dfam library if needed with multiple fallback URLs
         if [ ! -f "Libraries/Dfam.h5" ]; then
             echo "Downloading Dfam library..."
+            # Try yeast-specific subset first
             urls=(
-                "https://www.dfam.org/releases/Dfam_3.7/families/Dfam.h5.gz"
-                "https://dfam.org/releases/Dfam_3.7/families/Dfam.h5.gz"
+                "https://www.dfam.org/releases/current/families/fungi/Dfam.h5.gz"
+                "https://www.dfam.org/releases/Dfam_3.7/families/fungi/Dfam.h5.gz"
                 "https://www.dfam.org/releases/current/families/Dfam.h5.gz"
                 "https://www.repeatmasker.org/libraries/Dfam.h5.gz"
             )
