@@ -25,12 +25,13 @@ module load blast+/2.14.0
 module load hmmer/3.3.2
 module load trf/4.09.1
 module load perl/5.30.2
+module load apptainer/1.3.5  # Add explicit version to avoid any compatibility issues
 
-# Load Apptainer module if available
-if module avail -t 2>&1 | grep -q "^apptainer/"; then
-    module load apptainer
-elif module avail -t 2>&1 | grep -q "^singularity/"; then
-    module load singularity
+# Verify Apptainer is available
+if ! command_exists apptainer; then
+    echo "Error: Apptainer not found even after loading module. This is unexpected."
+    echo "Please check module load output above for errors."
+    exit 1
 fi
 
 # Install rmblast if not present or if rmblastn is not executable
@@ -71,27 +72,22 @@ download_with_retry() {
     return 1
 }
 
-# Try to use Apptainer/Singularity for RepeatMasker
-if command_exists apptainer || command_exists singularity; then
-    echo "Setting up RepeatMasker using container..."
-    mkdir -p $TOOLS_DIR/RepeatMasker
-    
-    # Use whichever command is available
-    CONTAINER_CMD=$(command -v apptainer || command -v singularity)
-    
-    # Pull the container if not present
-    if [ ! -f "$TOOLS_DIR/repeatmasker.sif" ]; then
-        echo "Downloading RepeatMasker container..."
-        $CONTAINER_CMD pull docker://dfam/tetools:latest
-        mv tetools_latest.sif $TOOLS_DIR/repeatmasker.sif
-    fi
-    
-    # Create wrapper scripts for the tools
-    cat > $TOOLS_DIR/RepeatMasker/RepeatMasker << 'EOF'
+# Try to use Apptainer for RepeatMasker
+echo "Setting up RepeatMasker using container..."
+mkdir -p $TOOLS_DIR/RepeatMasker
+
+# Pull the container if not present
+if [ ! -f "$TOOLS_DIR/repeatmasker.sif" ]; then
+    echo "Downloading RepeatMasker container..."
+    apptainer pull --force docker://dfam/tetools:latest
+    mv tetools_latest.sif $TOOLS_DIR/repeatmasker.sif
+fi
+
+# Create wrapper scripts for the tools
+cat > $TOOLS_DIR/RepeatMasker/RepeatMasker << 'EOF'
 #!/bin/bash
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTAINER="$SCRIPT_DIR/../repeatmasker.sif"
-CONTAINER_CMD=$(command -v apptainer || command -v singularity)
 
 # Convert input paths to absolute paths
 ARGS=()
@@ -103,32 +99,45 @@ for arg in "$@"; do
     fi
 done
 
-$CONTAINER_CMD exec \
+# Ensure we have access to the Apptainer module
+if [ -f "/etc/profile.d/modules.sh" ]; then
+    source /etc/profile.d/modules.sh
+    module load apptainer/1.3.5
+fi
+
+apptainer exec \
     -B "$PWD" \
-    -B "$TMPDIR" \
     -B "/scratch" \
+    -B "/tmp" \
     "$CONTAINER" \
     RepeatMasker "${ARGS[@]}"
 EOF
-    chmod +x $TOOLS_DIR/RepeatMasker/RepeatMasker
-    
-    # Create symlinks for other tools from the container
-    for tool in rmblastn trf; do
-        cat > "$TOOLS_DIR/RepeatMasker/$tool" << EOF
+chmod +x $TOOLS_DIR/RepeatMasker/RepeatMasker
+
+# Create symlinks for other tools from the container
+for tool in rmblastn trf; do
+    cat > "$TOOLS_DIR/RepeatMasker/$tool" << EOF
 #!/bin/bash
 SCRIPT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 CONTAINER="\$SCRIPT_DIR/../repeatmasker.sif"
-CONTAINER_CMD=\$(command -v apptainer || command -v singularity)
-exec \$CONTAINER_CMD exec "\$CONTAINER" $tool "\$@"
-EOF
-        chmod +x "$TOOLS_DIR/RepeatMasker/$tool"
-    done
-    
-    echo "RepeatMasker container setup complete"
-else
-    echo "Error: Neither Apptainer nor Singularity is available. Please load the appropriate module."
-    exit 1
+
+# Ensure we have access to the Apptainer module
+if [ -f "/etc/profile.d/modules.sh" ]; then
+    source /etc/profile.d/modules.sh
+    module load apptainer/1.3.5
 fi
+
+apptainer exec \
+    -B "$PWD" \
+    -B "/scratch" \
+    -B "/tmp" \
+    "$CONTAINER" \
+    $tool "\$@"
+EOF
+    chmod +x "$TOOLS_DIR/RepeatMasker/$tool"
+done
+
+echo "RepeatMasker container setup complete"
 
 # Install EDTA and dependencies if not present
 if [ ! -x "EDTA/EDTA.pl" ]; then
