@@ -183,13 +183,35 @@ class YeastTEAnalyzer:
         mem_gb = int(os.environ.get("SLURM_MEM_PER_NODE", "16")) // 2
         threads = int(os.environ.get("SLURM_CPUS_PER_TASK", "4"))
         
-        cmd = [
+        # First, run RepeatMasker directly from the container
+        rm_cmd = [
             "apptainer", "exec",
             "-B", f"{current_dir}:/data",
             "-B", "/scratch",
             "-B", "/tmp",
             f"{self.tools_dir}/repeatmasker.sif",
-            "EDTA.pl",
+            "RepeatMasker",
+            "-pa", str(threads),
+            "-species", "fungi",
+            "-gff",
+            "-dir", ".",
+            container_genome
+        ]
+        
+        print("Running RepeatMasker command:", " ".join(rm_cmd))
+        try:
+            subprocess.run(rm_cmd, check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"RepeatMasker analysis failed: {e}")
+            if hasattr(e, 'output'):
+                print("Error output:", e.output)
+            os.chdir(current_dir)
+            raise
+        
+        # Then run EDTA from your tools directory
+        edta_cmd = [
+            "perl",
+            f"{self.tools_dir}/EDTA/EDTA.pl",
             "--genome", container_genome,
             "--species", "others",
             "--step", "LTR,TIR,Helitron",
@@ -202,10 +224,9 @@ class YeastTEAnalyzer:
             "--anno", "1"
         ]
         
-        print("Running command:", " ".join(cmd))
+        print("Running EDTA command:", " ".join(edta_cmd))
         try:
-            # Run EDTA command directly - no need to load module as it should already be loaded
-            subprocess.run(cmd, check=True)
+            subprocess.run(edta_cmd, check=True)
         except subprocess.CalledProcessError as e:
             print(f"EDTA analysis failed: {e}")
             if hasattr(e, 'output'):
