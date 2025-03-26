@@ -177,7 +177,7 @@ class YeastTEAnalyzer:
         # Get available resources
         threads = int(os.environ.get("SLURM_CPUS_PER_TASK", "4"))
         
-        # Run RepeatMasker with Dfam database
+        # Run RepeatMasker with our curated library instead of Dfam
         rm_cmd = [
             "apptainer", "exec",
             "-B", f"{current_dir}:/data",
@@ -186,7 +186,7 @@ class YeastTEAnalyzer:
             f"{self.tools_dir}/repeatmasker.sif",
             "RepeatMasker",
             "-pa", str(threads),
-            "-species", "fungi",  # Now should work with Dfam installed
+            "-lib", os.path.basename(abs_lib),  # Use our curated library
             "-gff",
             "-dir", ".",
             "-nolow",  # Skip low complexity/simple repeats
@@ -207,11 +207,11 @@ class YeastTEAnalyzer:
         # Then run EDTA directly (not from container)
         edta_cmd = [
             f"{self.tools_dir}/EDTA/EDTA.pl",
-            "--genome", os.path.basename(abs_genome),  # Use local path
+            "--genome", os.path.basename(abs_genome),
             "--species", "others",
             "--step", "LTR,TIR,Helitron",
-            "--cds", os.path.basename(abs_gff),  # Use local path
-            "--curatedlib", os.path.basename(abs_lib),  # Use local path
+            "--cds", os.path.basename(abs_gff),
+            "--curatedlib", os.path.basename(abs_lib),
             "--threads", str(threads),
             "--overwrite", "1",
             "--sensitive", "1",
