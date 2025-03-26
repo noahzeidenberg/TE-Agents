@@ -177,35 +177,20 @@ class YeastTEAnalyzer:
         # Get available resources
         threads = int(os.environ.get("SLURM_CPUS_PER_TASK", "4"))
         
-        # First, ensure the container has the required dependencies
-        setup_cmd = [
-            "apptainer", "exec",
-            "-B", f"{current_dir}:/data",
-            "-B", "/scratch",
-            "-B", "/tmp",
-            f"{self.tools_dir}/repeatmasker.sif",
-            "bash", "-c",
-            "apt-get update && apt-get install -y libflexiblas3 python3-numpy python3-h5py"
-        ]
-        
-        try:
-            subprocess.run(setup_cmd, check=True)
-        except subprocess.CalledProcessError as e:
-            print("Warning: Could not install dependencies in container. Continuing anyway...")
-        
-        # Then run RepeatMasker
+        # Run RepeatMasker with Dfam database
         rm_cmd = [
             "apptainer", "exec",
-            "--env", "PYTHONPATH=/usr/lib/python3/dist-packages",  # Use system Python packages
             "-B", f"{current_dir}:/data",
             "-B", "/scratch",
             "-B", "/tmp",
             f"{self.tools_dir}/repeatmasker.sif",
             "RepeatMasker",
             "-pa", str(threads),
-            "-species", "fungi",
+            "-species", "fungi",  # Now should work with Dfam installed
             "-gff",
             "-dir", ".",
+            "-nolow",  # Skip low complexity/simple repeats
+            "-no_is",  # Skip bacterial insertion elements
             os.path.basename(abs_genome)
         ]
         
