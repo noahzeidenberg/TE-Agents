@@ -143,16 +143,28 @@ class YeastTEAnalyzer:
         Path("consensus").mkdir(exist_ok=True)
         
         # Check if consensus files exist
-        if not list(Path("consensus").glob("S288C_*.fsa")):
+        consensus_files = list(Path("consensus").glob("S288C_*.fsa"))
+        if not consensus_files:
             print("Warning: No consensus sequences found in consensus directory")
             print("Please ensure S288C_*.fsa files are present in the consensus directory")
             raise FileNotFoundError("Missing consensus sequence files")
         
         library_file = "consensus/yeast_te_library.fasta"
+        print(f"Creating library file: {library_file}")
         with open(library_file, 'w') as lib:
-            for te_file in Path("consensus").glob("S288C_*.fsa"):
+            for te_file in consensus_files:
+                print(f"Adding sequences from: {te_file}")
                 with open(te_file) as f:
-                    lib.write(f.read() + "\n")
+                    content = f.read()
+                    if not content.startswith('>'):
+                        print(f"Warning: {te_file} may not be in FASTA format")
+                    lib.write(content + "\n")
+        
+        print(f"Verifying library file...")
+        with open(library_file) as f:
+            first_line = f.readline().strip()
+            if not first_line.startswith('>'):
+                raise ValueError(f"Library file {library_file} is not in proper FASTA format")
         
         self.curated_library = library_file
 
@@ -177,26 +189,33 @@ class YeastTEAnalyzer:
         # Get available resources
         threads = int(os.environ.get("SLURM_CPUS_PER_TASK", "4"))
         
-        # Run RepeatMasker with our curated library instead of Dfam
+        # Create a clean environment for RepeatMasker
+        os.environ.pop('PYTHONPATH', None)  # Remove PYTHONPATH if it exists
+        
+        # Run RepeatMasker with absolute paths and clean environment
         rm_cmd = [
             "apptainer", "exec",
+            "--cleanenv",  # Use clean container environment
             "-B", f"{current_dir}:/data",
             "-B", "/scratch",
             "-B", "/tmp",
             f"{self.tools_dir}/repeatmasker.sif",
             "RepeatMasker",
             "-pa", str(threads),
-            "-lib", os.path.basename(abs_lib),  # Use our curated library
+            "-lib", f"/data/{os.path.basename(abs_lib)}",  # Use absolute path inside container
             "-gff",
-            "-dir", ".",
-            "-nolow",  # Skip low complexity/simple repeats
-            "-no_is",  # Skip bacterial insertion elements
-            os.path.basename(abs_genome)
+            "-dir", "/data",  # Use absolute path for output
+            "-nolow",
+            "-no_is",
+            f"/data/{os.path.basename(abs_genome)}"  # Use absolute path for input
         ]
         
         print("Running RepeatMasker command:", " ".join(rm_cmd))
         try:
-            subprocess.run(rm_cmd, check=True)
+            subprocess.run(rm_cmd, check=True, env={
+                'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                'HOME': '/tmp'  # Use /tmp for cache files
+            })
         except subprocess.CalledProcessError as e:
             print(f"RepeatMasker analysis failed: {e}")
             if hasattr(e, 'output'):
