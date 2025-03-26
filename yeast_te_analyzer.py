@@ -180,7 +180,7 @@ class YeastTEAnalyzer:
         shutil.copy(abs_lib, os.path.basename(abs_lib))
         
         # Get available memory in GB
-        mem_gb = int(os.environ.get("SLURM_MEM_PER_NODE", "16")) // 2  # Use half of available memory
+        mem_gb = int(os.environ.get("SLURM_MEM_PER_NODE", "16")) // 2
         threads = int(os.environ.get("SLURM_CPUS_PER_TASK", "4"))
         
         cmd = [
@@ -190,25 +190,21 @@ class YeastTEAnalyzer:
             "-B", "/tmp",
             f"{self.tools_dir}/repeatmasker.sif",
             "EDTA.pl",
-            "--genome", container_genome,  # Use container paths
+            "--genome", container_genome,
             "--species", "others",
             "--step", "LTR,TIR,Helitron",
-            "--cds", container_gff,  # Use container paths
-            "--curatedlib", container_lib,  # Use container paths
+            "--cds", container_gff,
+            "--curatedlib", container_lib,
             "--threads", str(threads),
-            "--overwrite", "1",  # Add overwrite flag
-            "--sensitive", "1",  # Add sensitive mode for better detection
+            "--overwrite", "1",
+            "--sensitive", "1",
             "--force", "1",
             "--anno", "1"
         ]
         
         print("Running command:", " ".join(cmd))
         try:
-            # More robust module loading
-            module_cmd = "source /etc/profile.d/modules.sh && module load apptainer"
-            subprocess.run(module_cmd, shell=True, executable='/bin/bash', check=True)
-            
-            # Run EDTA command
+            # Run EDTA command directly - no need to load module as it should already be loaded
             subprocess.run(cmd, check=True)
         except subprocess.CalledProcessError as e:
             print(f"EDTA analysis failed: {e}")
@@ -474,18 +470,18 @@ def main():
     
     try:
         analyzer = YeastTEAnalyzer(args.genome, args.gff)
-        analyzer.analyze()
+    analyzer.analyze()
     
     # Generate and save report
-        report = analyzer.generate_report()
+    report = analyzer.generate_report()
         if not report.empty:
             report.to_csv(f"{args.output}_report.csv", index=False)
             status_counts = report['Status'].value_counts()
-            print("\nAnalysis Summary:")
+    print("\nAnalysis Summary:")
             print(f"Total TEs found: {len(report)}")
-            print("\nTE Status Distribution:")
-            for status, count in status_counts.items():
-                print(f"{status}: {count}")
+    print("\nTE Status Distribution:")
+    for status, count in status_counts.items():
+        print(f"{status}: {count}")
         else:
             print("\nNo TEs were found in the analysis.")
     except Exception as e:
