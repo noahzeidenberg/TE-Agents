@@ -12,7 +12,7 @@ cd $TOOLS_DIR
 
 # Function to check if a command exists
 command_exists() {
-    command -v "$1" >/dev/null 2>&1
+    type "$1" &> /dev/null
 }
 
 # Load required modules
@@ -25,14 +25,26 @@ module load blast+/2.14.0
 module load hmmer/3.3.2
 module load trf/4.09.1
 module load perl/5.30.2
-module load apptainer/1.3.5  # Add explicit version to avoid any compatibility issues
 
-# Verify Apptainer is available
-if ! command_exists apptainer; then
-    echo "Error: Apptainer not found even after loading module. This is unexpected."
-    echo "Please check module load output above for errors."
+# Load Apptainer - try without version constraint first
+echo "Loading Apptainer module..."
+if ! module load apptainer; then
+    echo "Failed to load default apptainer module, trying specific versions..."
+    if ! module load apptainer/1.1.8; then
+        echo "Error: Could not load Apptainer module"
+        exit 1
+    fi
+fi
+
+# Verify Apptainer is available using 'which'
+if ! which apptainer &> /dev/null; then
+    echo "Error: Apptainer command not found even after loading module."
+    echo "Available modules:"
+    module avail apptainer
     exit 1
 fi
+
+echo "Apptainer version: $(apptainer --version)"
 
 # Install rmblast if not present or if rmblastn is not executable
 if [ ! -x "rmblast/bin/rmblastn" ]; then
