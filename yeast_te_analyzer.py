@@ -186,7 +186,6 @@ class YeastTEAnalyzer:
             "-dir", self.output_dir,
             "-nolow",  # Skip low complexity repeats
             "-no_is",  # Skip bacterial insertion elements
-            "-engine", "crossmatch",  # Use crossmatch instead of ncbi/rmblast
             abs_genome
         ]
         
