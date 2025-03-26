@@ -38,7 +38,7 @@ else
     echo "RMBlast already installed, skipping..."
 fi
 
-# Function to download with retry using optimized wget
+# Function to download with retry using wget
 download_with_retry() {
     local url=$1
     local output=$2
@@ -54,9 +54,6 @@ download_with_retry() {
             --waitretry=60 \
             --tries=10 \
             --retry-connrefused \
-            --dns-timeout=60 \
-            --connect-timeout=60 \
-            --read-timeout=60 \
             -O "$output" "$url"; then
             return 0
         fi
@@ -67,12 +64,27 @@ download_with_retry() {
     return 1
 }
 
-# Try to use module-provided RepeatMasker first
-if module avail -t 2>&1 | grep -q "^repeatmasker/"; then
-    echo "Loading RepeatMasker module..."
-    module load repeatmasker
-    # Create symlink in our tools directory
-    ln -sf $(dirname $(which RepeatMasker)) $TOOLS_DIR/RepeatMasker
+# Try to use Apptainer for RepeatMasker first
+if command_exists apptainer || command_exists singularity; then
+    echo "Setting up RepeatMasker using Apptainer..."
+    mkdir -p $TOOLS_DIR/RepeatMasker
+    
+    # Pull the RepeatMasker container
+    cd $TOOLS_DIR
+    if [ ! -f "repeatmasker.sif" ]; then
+        apptainer pull docker://dfam/repeatmasker:4.1.5
+        mv repeatmasker_4.1.5.sif repeatmasker.sif
+    fi
+    
+    # Create a wrapper script for RepeatMasker
+    cat > $TOOLS_DIR/RepeatMasker/RepeatMasker << 'EOF'
+#!/bin/bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONTAINER="$SCRIPT_DIR/../repeatmasker.sif"
+apptainer exec $CONTAINER RepeatMasker "$@"
+EOF
+    chmod +x $TOOLS_DIR/RepeatMasker/RepeatMasker
+    
 else
     # Install RepeatMasker if not present or not configured
     if [ ! -x "RepeatMasker/RepeatMasker" ] || [ ! -f "RepeatMasker/Libraries/Dfam.h5" ]; then
