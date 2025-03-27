@@ -177,15 +177,19 @@ class YeastTEAnalyzer:
         # Get available resources
         threads = int(os.environ.get("SLURM_CPUS_PER_TASK", "4"))
         
+        # Use full path to RepeatMasker
+        repeatmasker_path = os.path.expanduser("~/scratch/TE-Agents/tools_fresh/RepeatMasker/RepeatMasker")
+        
         # Run RepeatMasker using only our curated library
         rm_cmd = [
-            "RepeatMasker",
+            repeatmasker_path,  # Use full path instead of just "RepeatMasker"
             "-pa", str(threads),
             "-lib", abs_lib,  # Use our curated yeast TE library
             "-gff",
             "-dir", self.output_dir,
             "-nolow",  # Skip low complexity repeats
             "-no_is",  # Skip bacterial insertion elements
+            "-no_cached",  # Don't use cached libraries
             abs_genome
         ]
         
