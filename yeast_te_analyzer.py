@@ -182,14 +182,14 @@ class YeastTEAnalyzer:
         
         # Run RepeatMasker using only our curated library
         rm_cmd = [
-            repeatmasker_path,  # Use full path instead of just "RepeatMasker"
+            repeatmasker_path,
             "-pa", str(threads),
             "-lib", abs_lib,  # Use our curated yeast TE library
-            "-gff",
+            "-gff",  # Output in GFF format
             "-dir", self.output_dir,
             "-nolow",  # Skip low complexity repeats
             "-no_is",  # Skip bacterial insertion elements
-            "-no_cached",  # Don't use cached libraries
+            "-e", "ncbi",  # Explicitly set search engine
             abs_genome
         ]
         
