@@ -62,8 +62,3 @@ The script generates a tab-separated file (`results_te_analysis.tsv`) containing
 - Inactivation reason (if applicable)
 - Length
 - Nearby genomic features
-
-## References
-
-- Carr, M., Bensasson, D., & Bergman, C. M. (2012). Evolutionary genomics of transposable elements in Saccharomyces cerevisiae. PLoS One, 7(11), e50978.
-- Kim, J. M., Vanguri, S., Boeke, J. D., Gabriel, A., & Voytas, D. F. (1998). Transposable elements and genome organization: a comprehensive survey of retrotransposons revealed by the complete Saccharomyces cerevisiae genome sequence. Genome research, 8(5), 464-478. 
